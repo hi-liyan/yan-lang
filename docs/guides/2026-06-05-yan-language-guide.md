@@ -44,6 +44,7 @@ Yan 当前遵循以下原则：
 - 编译型语言，产出本地可执行文件
 - 强静态类型
 - 默认非空
+- 表达式优先，绝大多数构造都可以产生值
 - 错误显式，不依赖异常作为主控制流
 - 后端领域概念优先，例如 `app`、`module`、`endpoint`、`datasource`
 - 保留普通编程能力，不把整门语言做成纯 DSL
@@ -84,8 +85,8 @@ module user {
 
 record UserView {
   id: UserId
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 error UserError {
@@ -93,7 +94,7 @@ error UserError {
   InvalidId
 }
 
-endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
+endpoint get_user(ctx: RequestCtx, id: UserId) -> result<UserView, UserError> {
   let row = ctx.main_db.query_one[UserView](
     "
     SELECT id, name, email
@@ -114,7 +115,7 @@ endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
 - 模块通过 `route` 暴露接口
 - `endpoint` 是接口处理函数
 - 数据访问依赖标准库，不依赖 ORM
-- 错误通过 `Result` 显式表达
+- 错误通过 `result` 显式表达
 
 ## 5. 顶层构造说明
 
@@ -175,7 +176,7 @@ module user {
 示例：
 
 ```yan
-endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
+endpoint get_user(ctx: RequestCtx, id: UserId) -> result<UserView, UserError> {
   ...
 }
 ```
@@ -188,8 +189,8 @@ endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
 
 ```yan
 record CreateUserInput {
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 ```
 
@@ -237,9 +238,9 @@ Yan 保留常规编程语言的基本结构，不在这些部分做过度创新�
 ### 6.1 变量绑定
 
 ```yan
-let name = "yan"
-let count = 1
-let mut total = 0
+let name: string = "yan"
+let count: int = 1
+let mut total: int = 0
 ```
 
 建议规则：
@@ -247,18 +248,19 @@ let mut total = 0
 - `let` 用于普通绑定
 - `let mut` 用于可变绑定
 - 默认不可变
+- 局部变量声明采用 Rust 风格的 `name: type`
 
 ### 6.2 函数
 
 ```yan
-fn add(a: Int, b: Int) -> Int {
+fn add(a: int, b: int) -> int {
   a + b
 }
 ```
 
 建议规则：
 
-- 参数采用 `name: Type`
+- 参数采用 `name: type`
 - 返回类型采用 `->`
 - 不要求以分号作为所有语句结尾
 
@@ -266,14 +268,15 @@ fn add(a: Int, b: Int) -> Int {
 
 当前建议 Yan 至少支持：
 
-- `Int`
-- `Bool`
-- `Str`
-- `Float`
-- `Option<T>`
-- `Result<T, E>`
-- `List<T>`
-- `Map<K, V>`
+- `int`
+- `float`
+- `bool`
+- `string`
+- `array<T>`
+- `set<T>`
+- `map<K, V>`
+- `option<T>`
+- `result<T, E>`
 
 后续可以继续扩展更细的标准类型，例如：
 
@@ -282,6 +285,36 @@ fn add(a: Int, b: Int) -> Int {
 - `Uuid`
 - `DateTime`
 
+这些基础类型和内建泛型统一使用小写命名风格，不保留 `Int`、`Bool`、`Str` 这类首字母大写写法。
+
+### 6.4 表达式优先
+
+Yan 采用“表达式优先”的规则，尽量让控制流和代码块都能直接产生值。
+
+当前明确作为表达式的构造包括：
+
+- 普通代码块
+- `if / else`
+- `match`
+- `loop`
+
+示例：
+
+```yan
+let status: string = if user.is_admin {
+  "admin"
+} else {
+  "user"
+}
+
+let message: string = match result {
+  Ok(user) => user.name
+  Err(_) => "guest"
+}
+```
+
+`let` 绑定、赋值、`return` 仍然属于带控制语义的特殊形式，但它们不改变 Yan 以表达式为默认组织方式的总体方向。
+
 ## 7. 分支与模式匹配
 
 Yan 不应在基础控制流上做过度发明，优先采用熟悉且清晰的形式。
@@ -289,10 +322,10 @@ Yan 不应在基础控制流上做过度发明，优先采用熟悉且清晰的�
 ### 7.1 `if / else`
 
 ```yan
-if user.is_admin {
-  allow()
+let allowed: bool = if user.is_admin {
+  true
 } else {
-  deny()
+  false
 }
 ```
 
@@ -307,14 +340,14 @@ match result {
 
 `match` 的主要用途包括：
 
-- 匹配 `Result`
-- 匹配 `Option`
+- 匹配 `result`
+- 匹配 `option`
 - 匹配业务枚举
 - 清晰表达多分支逻辑
 
 ## 8. 循环
 
-Yan 建议保留三类常规循环结构。
+Yan 建议保留三类常规循环结构，并继续遵循表达式优先规则。
 
 ### 8.1 `while`
 
@@ -335,20 +368,22 @@ for user in users {
 ### 8.3 `loop`
 
 ```yan
-loop {
+let next_id: int = loop {
   if done {
-    break
+    break current_id
   }
+
+  current_id = current_id + 1
 }
 ```
 
-对 Yan 来说，接口开发和业务逻辑是重点，循环语法应尽量常规，不必刻意追求新颖。
+对 Yan 来说，接口开发和业务逻辑是重点，因此循环语法应尽量常规；其中 `loop` 可以自然承担需要产值的表达式场景，`while` 和 `for` 在不显式产值时可视为求值为 `unit`。
 
 ## 9. 错误处理
 
 Yan 的主错误模型是：
 
-- 使用 `Result<T, E>`
+- 使用 `result<T, E>`
 - 使用 `?` 上传错误
 - 使用 `match` 显式处理错误
 - 不把异常作为默认控制流
@@ -365,7 +400,7 @@ error UserError {
 ### 9.2 返回错误
 
 ```yan
-fn validate_name(name: Str) -> Result<Str, UserError> {
+fn validate_name(name: string) -> result<string, UserError> {
   if name == "" {
     return Err(UserError.InvalidEmail)
   }
@@ -377,7 +412,7 @@ fn validate_name(name: Str) -> Result<Str, UserError> {
 ### 9.3 错误上传
 
 ```yan
-fn load_user(id: UserId, db: DbConn) -> Result<UserView, UserError> {
+fn load_user(id: UserId, db: DbConn) -> result<UserView, UserError> {
   let row = db.query_one[UserView](
     "
     SELECT id, name, email
@@ -401,7 +436,7 @@ match load_user(id, db) {
 }
 ```
 
-当前建议是：Yan 首版不提供 `try/catch` 作为主模型，而是用 `Result + ? + match` 解决绝大多数错误控制流。
+当前建议是：Yan 首版不提供 `try/catch` 作为主模型，而是用 `result + ? + match` 解决绝大多数错误控制流。
 
 ## 10. 请求处理
 
@@ -410,7 +445,7 @@ Yan 的重点之一是让接口定义更清晰。
 当前推荐的 endpoint 形式如下：
 
 ```yan
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError> {
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError> {
   ...
 }
 ```
@@ -420,11 +455,11 @@ endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<Use
 - `ctx` 是请求上下文
 - `body` 来自请求体
 - `CreateUserInput` 是强类型输入模型
-- 返回值是显式 `Result`
+- 返回值是显式 `result`
 
 后续有两条可能的语法方向：
 
-1. 继续沿用包装类型，例如 `Json<T>`
+1. 继续沿用包装类型，例如 `json<T>`
 2. 改成更显式的参数来源标记，例如 `body input: CreateUserInput`
 
 这部分仍在设计中，但无论采用哪一种，目标都不变：
@@ -483,7 +518,7 @@ app api {
 ### 11.3 在 endpoint 中使用
 
 ```yan
-endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
+endpoint get_user(ctx: RequestCtx, id: UserId) -> result<UserView, UserError> {
   let row = ctx.main_db.query_one[UserRow](
     "
     SELECT id, name, email
@@ -502,7 +537,7 @@ endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, UserError> {
 事务不是语言关键字，推荐通过标准库 API 表达：
 
 ```yan
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError> {
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError> {
   let input = body.value
 
   ctx.main_db.transaction(fn(tx) {
@@ -556,7 +591,7 @@ Yan 不应让所有逻辑都堆在 endpoint 中。
 业务逻辑仍然应该通过普通 `fn` 抽离：
 
 ```yan
-fn ensure_name(name: Str) -> Result<Str, CreateUserError> {
+fn ensure_name(name: string) -> result<string, CreateUserError> {
   if name == "" {
     return Err(CreateUserError.InvalidName)
   }
@@ -568,7 +603,7 @@ fn ensure_name(name: Str) -> Result<Str, CreateUserError> {
 然后在 endpoint 中调用：
 
 ```yan
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError> {
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError> {
   let input = body.value
   let name = ensure_name(input.name)?
 
@@ -600,26 +635,26 @@ module user {
 
 record UserRow {
   id: UserId
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 record UserView {
   id: UserId
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 record CreateUserInput {
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 error CreateUserError {
   InvalidName
 }
 
-fn ensure_name(name: Str) -> Result<Str, CreateUserError> {
+fn ensure_name(name: string) -> result<string, CreateUserError> {
   if name == "" {
     return Err(CreateUserError.InvalidName)
   }
@@ -627,7 +662,7 @@ fn ensure_name(name: Str) -> Result<Str, CreateUserError> {
   Ok(name)
 }
 
-endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, HttpError> {
+endpoint get_user(ctx: RequestCtx, id: UserId) -> result<UserView, HttpError> {
   let row = ctx.main_db.query_one[UserRow](
     "
     SELECT id, name, email
@@ -640,7 +675,7 @@ endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, HttpError> {
   Ok(UserView.from(row))
 }
 
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError> {
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError> {
   let input = body.value
   let name = ensure_name(input.name)?
 
@@ -663,7 +698,7 @@ endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<Use
 
 虽然这份 guide 以“如何使用”来组织，但以下内容仍然没有完全定稿：
 
-- endpoint 参数来源语法是否继续使用 `Json<T>` 这类包装类型
+- endpoint 参数来源语法是否继续使用 `json<T>` 这类包装类型
 - `route` 是否继续和 `endpoint` 分离
 - `Ok(...)` / `Err(...)` 是否保持当前形式，还是进一步包装
 - 用户自定义 `datasource` 类型如何声明

@@ -7,7 +7,7 @@
 
 本文档用于集中整理 Yan 当前类型系统设计中已经暴露出来、但尚未定稿的问题。
 
-这些问题虽然来自示例代码中的局部疑问，例如 `UserId`、`Email`、`Json<T>`、`Result<T, E>` 的使用方式，但本质上会影响：
+这些问题虽然来自示例代码中的局部疑问，例如 `UserId`、`Email`、`json<T>`、`result<T, E>` 的使用方式，但本质上会影响：
 
 - Yan 的基础类型系统
 - 业务建模能力
@@ -26,8 +26,8 @@
 - 类型别名与新类型应如何区分
 - `Email`、`Url` 这类受约束类型应如何表达
 - `check ... else ...` 这类校验语法与类型系统如何配合
-- `Json<T>` 这类包装类型是否属于语言推荐模型
-- `Result<T, E>`、`Option<T>` 是否作为核心内建泛型
+- `json<T>` 这类包装类型是否属于语言推荐模型
+- `result<T, E>`、`option<T>` 是否作为核心内建泛型
 
 ## 3. 课题一：`UserId` 是否为真正的类型
 
@@ -38,8 +38,8 @@
 ```yan
 record UserView {
   id: UserId
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 ```
 
@@ -47,22 +47,22 @@ record UserView {
 
 ### 3.2 为什么这是个问题
 
-如果 `UserId` 只是 `Int` 的普通别名，那么：
+如果 `UserId` 只是 `int` 的普通别名，那么：
 
 - 文档可读性更好
-- 但类型系统未必真正区分 `UserId` 和 `Int`
+- 但类型系统未必真正区分 `UserId` 和 `int`
 
 这样就无法完全防止把不同业务标识混用。
 
 例如：
 
 ```yan
-fn load_user(user_id: UserId, order_id: OrderId) -> Result<User, UserError> {
+fn load_user(user_id: UserId, order_id: OrderId) -> result<User, UserError> {
   ...
 }
 ```
 
-如果 `UserId` 和 `OrderId` 最终都退化成 `Int`，那么很多本应由类型系统阻止的错误依然可能发生。
+如果 `UserId` 和 `OrderId` 最终都退化成 `int`，那么很多本应由类型系统阻止的错误依然可能发生。
 
 ### 3.3 待定问题
 
@@ -88,13 +88,13 @@ Yan 需要明确区分以下两种需求：
 例如：
 
 ```yan
-type UserName = Str
+type UserName = string
 ```
 
 与：
 
 ```yan
-newtype UserId = Int
+newtype UserId = int
 ```
 
 语义上并不相同。
@@ -170,7 +170,7 @@ let email = check input.email as Email else CreateUserError.InvalidEmail
 这里不仅是“校验一个值”，还涉及：
 
 - 是否产生一个新值
-- 新值的类型是否从 `Str` 提升为 `Email`
+- 新值的类型是否从 `string` 提升为 `Email`
 - 校验失败如何进入错误控制流
 
 ### 6.3 需要定下的内容
@@ -186,15 +186,15 @@ let email = check input.email as Email else CreateUserError.InvalidEmail
 
 当前文档中已经使用了：
 
-- `Option<T>`
-- `Result<T, E>`
-- `Json<T>`
+- `option<T>`
+- `result<T, E>`
+- `json<T>`
 
 ### 7.2 需要明确的问题
 
 - 这些类型是否都属于语言官方推荐核心模型
-- `Option<T>` 和 `Result<T, E>` 是否视为基础标准类型
-- `Json<T>` 是标准库包装类型，还是 endpoint 参数语法的临时方案
+- `option<T>` 和 `result<T, E>` 是否视为基础标准类型
+- `json<T>` 是标准库包装类型，还是 endpoint 参数语法的临时方案
 
 ### 7.3 课题意义
 
@@ -232,13 +232,14 @@ Yan 如果要强调后端开发体验，仅有基础类型和 `record` 可能不
 2. 再定“类型别名”和“新类型”是否同时存在
 3. 再定 `Email` 这类受约束类型的定义方式
 4. 再定 `check ... else ...` 是否作为标准校验入口
-5. 最后统一 `Option`、`Result`、`Json` 等包装类型在语言中的层级
+5. 最后统一 `option`、`result`、`json` 等包装类型在语言中的层级
 
 ## 10. 当前结论
 
 当前可以先记录的临时结论如下：
 
 - `UserId` 应视为真正的类型，而不是普通字段名
+- Yan 的内建基础类型与内建泛型命名应统一采用小写风格，例如 `int`、`string`、`option<T>`、`result<T, E>`
 - Yan 需要一种表达“独立业务类型”的机制
 - Yan 很可能需要区分“类型别名”和“新类型”
 - `Email` 这类受约束类型需要系统化设计，不能只靠示例零散出现
@@ -253,6 +254,7 @@ Yan 如果要强调后端开发体验，仅有基础类型和 `record` 可能不
 该文档应进一步回答：
 
 - 基础类型有哪些
+- 小写基础类型与用户自定义类型的命名边界如何约束
 - 类型声明语法有哪些
 - 新类型如何定义
 - 受约束类型如何定义

@@ -23,7 +23,7 @@
 - `ok`
 - `fail`
 - `app` 中引入 `datasource` 的方式
-- `body: Json<T>` 这类请求提取写法
+- `body: json<T>` 这类请求提取写法
 - `route ... -> handler` 的声明形式
 
 其中优先级最高的是：
@@ -139,7 +139,7 @@ ok UserView.from(inserted)
 表达的语义是：
 
 - 构造一个成功结果
-- 在需要时等价于 `Result::Ok(...)`
+- 在需要时等价于 `result::Ok(...)`
 
 ### 4.2 核心问题
 
@@ -194,7 +194,7 @@ return UserView.from(inserted)
 
 缺点：
 
-- 如果返回类型是 `Result<T, E>`，这里会引入隐式包装还是要求显式包装，必须另定规则
+- 如果返回类型是 `result<T, E>`，这里会引入隐式包装还是要求显式包装，必须另定规则
 - 会削弱成功/失败路径的显式程度
 
 ### 4.4 推荐
@@ -246,7 +246,7 @@ fail CreateUserError.EmailTaken
 缺点：
 
 - 再增加一个语言关键字
-- 与普通 `Result` 生态可能出现双表达体系
+- 与普通 `result` 生态可能出现双表达体系
 
 #### 方案 B：使用标准构造返回
 
@@ -257,7 +257,7 @@ return Err(CreateUserError.EmailTaken)
 优点：
 
 - 形式稳定
-- 和 `Result` 模型自然一致
+- 和 `result` 模型自然一致
 
 缺点：
 
@@ -289,7 +289,7 @@ return Err(CreateUserError.EmailTaken)
 
 推荐理由：
 
-- 和 `Result<T, E>` 模型一致
+- 和 `result<T, E>` 模型一致
 - 不必额外引入 `fail` 关键字
 - 比较符合强类型编译语言的常见直觉
 
@@ -407,8 +407,8 @@ let rows = ctx.main_db.query_many[UserRow](sql, [active])?
 
 ```yan
 let row: UserRow = ctx.main_db.query(sql, [id])?
-let row: Option<UserRow> = ctx.main_db.query(sql, [id])?
-let rows: Vec<UserRow> = ctx.main_db.query(sql, [active])?
+let row: option<UserRow> = ctx.main_db.query(sql, [id])?
+let rows: array<UserRow> = ctx.main_db.query(sql, [active])?
 ```
 
 优点：
@@ -431,7 +431,7 @@ let rows: Vec<UserRow> = ctx.main_db.query(sql, [active])?
 ### 8.1 当前形式
 
 ```yan
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError>
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError>
 ```
 
 ### 8.2 核心问题
@@ -443,7 +443,7 @@ endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<Use
 #### 方案 A：依赖包装类型
 
 ```yan
-body: Json<CreateUserInput>
+body: json<CreateUserInput>
 ```
 
 优点：
@@ -506,7 +506,7 @@ route GET "/users/:id" -> get_user
 #### 方案 B：把路由直接写入 endpoint 头部
 
 ```yan
-endpoint GET "/users/:id" get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, HttpError> {
+endpoint GET "/users/:id" get_user(ctx: RequestCtx, id: UserId) -> result<UserView, HttpError> {
   ...
 }
 ```

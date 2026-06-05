@@ -28,6 +28,7 @@ Yan 是一门通用后端语言，但重点优化 HTTP API 服务开发。
 - 强静态类型
 - 默认类型安全
 - 默认非空
+- 表达式优先
 - 错误模型显式
 - 支持原生 SQL，但不试图用 ORM DSL 取代 SQL
 - 安全目标接近 Rust，但不照搬 Rust 的表层模型
@@ -97,13 +98,13 @@ module user {
 
 record UserView {
   id: UserId
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 record CreateUserInput {
-  name: Str
-  email: Str
+  name: string
+  email: string
 }
 
 error CreateUserError {
@@ -111,7 +112,7 @@ error CreateUserError {
   EmailTaken
 }
 
-endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, HttpError> {
+endpoint get_user(ctx: RequestCtx, id: UserId) -> result<UserView, HttpError> {
   let row = ctx.main_db.query_one[UserRow](
     "
     SELECT id, name, email
@@ -128,7 +129,7 @@ endpoint get_user(ctx: RequestCtx, id: UserId) -> Result<UserView, HttpError> {
   })
 }
 
-endpoint create_user(ctx: RequestCtx, body: Json<CreateUserInput>) -> Result<UserView, CreateUserError> {
+endpoint create_user(ctx: RequestCtx, body: json<CreateUserInput>) -> result<UserView, CreateUserError> {
   let input = body.value
 
   let email = check input.email as Email else CreateUserError.InvalidEmail
@@ -156,13 +157,13 @@ Yan 必须在聚焦后端开发的同时，保持较高的静态安全标准。
 
 ### 6.1 默认非空
 
-所有类型默认非空。只有通过 `Option<T>` 才能表达“值可能不存在”。
+所有类型默认非空。只有通过 `option<T>` 才能表达“值可能不存在”。
 
 这样可以避免隐式空值传播，并强制开发者显式建模缺失状态。
 
 ### 6.2 错误显式
 
-所有可能失败的操作都必须通过 `Result<T, E>` 暴露失败路径。
+所有可能失败的操作都必须通过 `result<T, E>` 暴露失败路径。
 
 Yan 不应当采用“默认依赖未受检异常”的控制流模型。
 
@@ -215,6 +216,8 @@ Yan 在 v0.1 中应当支持 async 后端编程，但必须拒绝不安全的跨
 普通应用代码不应依赖 `unsafe`。
 
 ## 7. 后端原生语义
+
+在 Yan 中，“表达式优先”不是局部技巧，而是语言整体规则。代码块、`if / else`、`match` 和 `loop` 默认都可以产生值，局部变量声明采用类似 Rust 的 `let name: type = value` 形式；`let`、赋值和 `return` 则保留为带控制语义的特殊形式。
 
 Yan 应当把常见后端概念视为语言概念，而不是仅仅作为库约定存在。
 
@@ -306,10 +309,20 @@ Yan 的表层使用体验应比 Rust 更轻，但仍然保持强静态保证。
 - 基础类型
 - `record`
 - `enum`
-- `Option<T>`
-- `Result<T, E>`
+- `option<T>`
+- `result<T, E>`
 - 集合类型
-- 请求和 SQL 包装类型，例如 `Json<T>`
+- 请求和 SQL 包装类型，例如 `json<T>`
+
+第一版基础类型命名采用小写内建风格：
+
+- `int`
+- `float`
+- `bool`
+- `string`
+- `array<T>`
+- `set<T>`
+- `map<K, V>`
 
 ### 9.2 错误类型
 
@@ -339,7 +352,7 @@ Endpoint 错误应能够通过语言规则或标准库规则稳定映射为 HTTP
 - datasource 声明
 - record 和 enum
 - 显式错误类型
-- `Option` 和 `Result`
+- `option` 和 `result`
 - async endpoint
 - JSON 请求与响应处理
 - 请求上下文
