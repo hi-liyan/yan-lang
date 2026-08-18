@@ -1,0 +1,8 @@
+module examples.data_types.bytes
+
+import yan.platform.console
+
+fn main() -> unit {
+  let signature: bytes = bytes.from_hex("a13f")
+  console.println(signature)
+}

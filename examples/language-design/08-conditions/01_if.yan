@@ -1,0 +1,12 @@
+module examples.conditions
+
+import yan.platform.console
+
+fn main() -> unit {
+  let release_ready = true
+  if release_ready {
+    console.println("ready")
+  } else {
+    console.println("pending")
+  }
+}

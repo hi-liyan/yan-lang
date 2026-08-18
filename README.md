@@ -8,7 +8,7 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 
 ## 当前阶段
 
-当前处于 M4“新类型与结构体”阶段：以已确认的 `03_structs.yan` 为新增实现边界，扩展新类型、结构体字面量、字段默认值与点访问。范围与验收标准见 [M4 目标](docs/milestones/m4-structs.md)。其余语言示例仍处于 [M0 评审](examples/language-design/README.md)。
+当前处于 M4“新类型与结构体”阶段：以已确认的 `03-structs/01_structs.yan` 为新增实现边界，扩展新类型、结构体字面量、字段默认值与点访问。范围与验收标准见 [M4 目标](docs/milestones/m4-structs.md)。其余语言示例仍处于 [语言示例索引](examples/language-design/README.md) 中的设计评审阶段。
 
 这不是可用于生产开发的语言版本。M2 仅支持值与绑定子集；其他类型、控制流、代码生成、包管理、完整标准库和平台库尚未实现。
 
@@ -18,13 +18,13 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 
 ```powershell
 cargo run -p yanc -- --help
-cargo run -p yanc -- check examples/language-design/01_values.yan
-cargo run -p yanc -- run examples/language-design/01_values.yan
-cargo run -p yanc -- run examples/language-design/02_functions.yan
-cargo run -p yanc -- run examples/language-design/03_structs.yan
+cargo run -p yanc -- check examples/language-design/01-data-types/01_variables_and_bindings.yan
+cargo run -p yanc -- run examples/language-design/01-data-types/01_variables_and_bindings.yan
+cargo run -p yanc -- run examples/language-design/02-functions/01_functions.yan
+cargo run -p yanc -- run examples/language-design/03-structs/01_structs.yan
 ```
 
-`check` 当前可检查 M2 的值与绑定子集。`run` 可解释执行已确认的 `01_values.yan`，输出 `Yan` 与 `1`；也可执行 M3 的 `02_functions.yan`，输出 `total: 597`，以及 M4 的 `03_structs.yan`，输出 `Lin`。其他 `examples/language-design/` 提案仍不能使用这些命令检查。
+`check` 当前可检查 M2 的值与绑定子集。`run` 可解释执行已确认的 `01-data-types/01_variables_and_bindings.yan`，输出 `Yan` 与 `1`；也可执行 M3 的 `02-functions/01_functions.yan`，输出 `total: 597`，以及 M4 的 `03-structs/01_structs.yan`，输出 `Lin`。其他 `examples/language-design/` 提案仍不能使用这些命令检查。
 
 ## 仓库结构
 

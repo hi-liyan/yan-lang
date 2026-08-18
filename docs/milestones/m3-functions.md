@@ -1,7 +1,7 @@
 # M3：函数与字符串插值
 
 状态：进行中
-范围：仅使 `examples/language-design/02_functions.yan` 能被 `yanc run` 检查并执行
+范围：仅使 `examples/language-design/02-functions/01_functions.yan` 能被 `yanc run` 检查并执行
 
 ## 前提
 
@@ -12,7 +12,7 @@
 以下命令成功执行：
 
 ```powershell
-cargo run -p yanc -- run examples/language-design/02_functions.yan
+cargo run -p yanc -- run examples/language-design/02-functions/01_functions.yan
 ```
 
 标准输出必须为：
@@ -26,7 +26,7 @@ total: 597
 - 函数参数数量和参数类型不匹配时，`yanc check` 报告带位置的诊断。
 - 非 `unit` 函数的最后一个表达式必须与声明返回类型一致。
 - 插值仅允许 `{identifier}`，且 identifier 必须是当前函数作用域中的变量。
-- M2 的 `01_values.yan` 持续可执行。
+- M2 的 `01-data-types/01_variables_and_bindings.yan` 持续可执行。
 
 ## 包含语法
 

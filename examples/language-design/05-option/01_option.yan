@@ -1,0 +1,14 @@
+module examples.option
+
+import yan.platform.console
+
+fn display_name(name: option<string>) -> string {
+  match name {
+    Some(value) => value
+    None => "anonymous"
+  }
+}
+
+fn main() -> unit {
+  console.println(display_name(Some("Lin")))
+}

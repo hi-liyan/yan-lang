@@ -1,0 +1,11 @@
+module examples.data_types.unit
+
+import yan.platform.console
+
+fn log_started() -> unit {
+  console.println("started")
+}
+
+fn main() -> unit {
+  log_started()
+}

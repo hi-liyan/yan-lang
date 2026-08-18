@@ -1,0 +1,12 @@
+module examples.tuples
+
+import yan.platform.console
+
+fn split_name(full_name: string) -> (string, string) {
+  ("Lin", "Yan")
+}
+
+fn main() -> unit {
+  let (first_name, last_name) = split_name("Lin Yan")
+  console.println("{first_name} {last_name}")
+}

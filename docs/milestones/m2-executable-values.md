@@ -1,18 +1,18 @@
 # M2：可执行值与绑定子集
 
 状态：已完成
-范围：仅使 `examples/language-design/01_values.yan` 能被 `yanc run` 检查并执行
+范围：仅使 `examples/language-design/01-data-types/01_variables_and_bindings.yan` 能被 `yanc run` 检查并执行
 
 ## 前提
 
-用户已确认 `01_values.yan` 中的模块、导入、绑定、类型标注、默认不可变、`mut`、列表、整数加法及 `yan.platform.console` 的使用体验。其他 M0 示例仍处于设计评审，不能据此扩展 M2。
+用户已确认 `01_variables_and_bindings.yan` 中的模块、导入、绑定、类型标注、默认不可变、`mut`、列表、整数加法及 `yan.platform.console` 的使用体验。其他示例仍处于设计评审，不能据此扩展 M2。
 
 ## 验收标准
 
 以下命令成功执行：
 
 ```powershell
-cargo run -p yanc -- run examples/language-design/01_values.yan
+cargo run -p yanc -- run examples/language-design/01-data-types/01_variables_and_bindings.yan
 ```
 
 标准输出必须为：

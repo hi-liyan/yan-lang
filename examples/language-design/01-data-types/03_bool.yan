@@ -1,0 +1,8 @@
+module examples.data_types.bool
+
+import yan.platform.console
+
+fn main() -> unit {
+  let release_ready: bool = true
+  console.println(release_ready)
+}

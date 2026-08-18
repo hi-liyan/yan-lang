@@ -1,0 +1,10 @@
+module examples.loops
+
+import yan.platform.console
+
+fn main() -> unit {
+  let targets = ["cli", "web"]
+  for target in targets {
+    console.println(target)
+  }
+}

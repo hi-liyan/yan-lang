@@ -1,7 +1,7 @@
 # M4：新类型与结构体
 
 状态：进行中
-范围：仅使 `examples/language-design/03_structs.yan` 能被 `yanc run` 检查并执行
+范围：仅使 `examples/language-design/03-structs/01_structs.yan` 能被 `yanc run` 检查并执行
 
 ## 前提
 
@@ -12,7 +12,7 @@
 以下命令成功执行：
 
 ```powershell
-cargo run -p yanc -- run examples/language-design/03_structs.yan
+cargo run -p yanc -- run examples/language-design/03-structs/01_structs.yan
 ```
 
 标准输出必须为：
@@ -27,7 +27,7 @@ Lin
 - 结构体字面量必须使用具名字段；缺少无默认值字段、重复字段、未知字段或字段类型不匹配时，`yanc check` 报告带位置的英文诊断。
 - 省略带默认值的字段时使用声明默认值；显式提供时使用显式值。
 - 点访问仅允许读取已定义的结构体字段。
-- M2 的 `01_values.yan` 与 M3 的 `02_functions.yan` 持续可执行。
+- M2 的 `01-data-types/01_variables_and_bindings.yan` 与 M3 的 `02-functions/01_functions.yan` 持续可执行。
 
 ## 包含语法
 

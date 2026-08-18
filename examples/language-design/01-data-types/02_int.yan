@@ -1,0 +1,8 @@
+module examples.data_types.int
+
+import yan.platform.console
+
+fn main() -> unit {
+  let request_limit: int = 100
+  console.println(request_limit)
+}

@@ -1,0 +1,11 @@
+module examples.data_types.map
+
+import yan.platform.console
+
+fn main() -> unit {
+  let ports: map<string, int> = {
+    "http": 80
+    "https": 443
+  }
+  console.println(ports)
+}

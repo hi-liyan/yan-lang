@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M4 新类型与结构体。只允许实现 `docs/milestones/m4-structs.md` 中列出的 `03_structs.yan` 语法、类型检查、解释执行和诊断，并保持 M2、M3 可用。除维护已有功能外，禁止加入类型别名、隐式转换、显式转换函数、struct 方法、构造器重载、解构、结构体更新语法、泛型 struct、enum、match、option、result、控制流、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M4 新类型与结构体。只允许实现 `docs/milestones/m4-structs.md` 中列出的 `03-structs/01_structs.yan` 语法、类型检查、解释执行和诊断，并保持 M2、M3 可用。除维护已有功能外，禁止加入类型别名、隐式转换、显式转换函数、struct 方法、构造器重载、解构、结构体更新语法、泛型 struct、enum、match、option、result、控制流、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

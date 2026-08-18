@@ -1,0 +1,8 @@
+module examples.data_types.string
+
+import yan.platform.console
+
+fn main() -> unit {
+  let application_name: string = "Yan"
+  console.println(application_name)
+}

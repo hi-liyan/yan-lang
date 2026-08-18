@@ -1,0 +1,8 @@
+module examples.data_types.list
+
+import yan.platform.console
+
+fn main() -> unit {
+  let supported_targets: list<string> = ["cli", "web"]
+  console.println(supported_targets)
+}
