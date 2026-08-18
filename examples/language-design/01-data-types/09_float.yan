@@ -1,0 +1,9 @@
+module examples.data_types.float
+
+import yan.platform.console
+
+/// `float` 用于需要小数精度的通用计算，固定为 IEEE 754 f64。
+fn main() -> unit {
+  let tax_rate: float = 0.10 // 小数值不与 int 隐式转换
+  console.println(tax_rate)
+}

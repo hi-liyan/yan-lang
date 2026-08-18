@@ -4,7 +4,7 @@
 
 | 主题 | 状态 | 示例 |
 | --- | --- | --- |
-| 数据类型与变量绑定 | 部分已实现 | `01-data-types/01_variables_and_bindings.yan`、`02_int.yan`、`03_bool.yan`、`04_string.yan`、`05_list.yan`、`06_unit.yan`、`07_bytes.yan`、`08_map.yan` |
+| 数据类型与变量绑定 | 部分已实现 | `01-data-types/01_variables_and_bindings.yan`、`02_int.yan`、`03_bool.yan`、`04_string.yan`、`05_list.yan`、`06_unit.yan`、`07_bytes.yan`、`08_map.yan`、`09_float.yan` |
 | 函数 | 已实现 | `02-functions/01_functions.yan` |
 | 新类型与结构体 | 已实现 | `03-structs/01_structs.yan` |
 | 枚举与 match | 设计提案 | `04-enums-and-match/01_enums_and_match.yan` |
@@ -19,7 +19,7 @@
 
 ## 当前已实现的类型
 
-当前 `yanc` 支持 `int`、`bool`、`string`、`unit` 与 `list<T>`，并支持局部 `let` / `mut` 绑定。上述数据类型示例各自只聚焦一个类型；`01_variables_and_bindings.yan` 展示绑定、类型标注与重新赋值的组合。`bytes` 与 `map<string, T>` 已有设计提案，但尚未实现，不能使用当前 `yanc` 执行。
+当前 `yanc` 支持 `int`、`bool`、`string`、`unit` 与 `list<T>`，并支持局部 `let` / `mut` 绑定。上述数据类型示例各自只聚焦一个类型；`01_variables_and_bindings.yan` 展示绑定、类型标注与重新赋值的组合。`bytes`、`map<string, T>` 与 `float` 已有设计提案，但尚未实现，不能使用当前 `yanc` 执行。
 
 ## 共同约定
 
