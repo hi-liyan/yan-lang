@@ -13,6 +13,8 @@ pub enum TokenKind {
     Identifier,
     /// 仅由十进制数字组成的整数字面量。
     Integer,
+    /// 包含小数点的十进制浮点数字面量。
+    Float,
     /// 由双引号包围且不跨行的字符串字面量。
     String,
     LeftParen,
@@ -207,6 +209,8 @@ pub enum Statement {
 pub enum Expression {
     /// 十进制整数。
     Integer { value: i64, span: Span },
+    /// 十进制浮点数。
+    Float { value: String, span: Span },
     /// 布尔值。
     Boolean { value: bool, span: Span },
     /// 未转义的字符串内容。
@@ -260,6 +264,7 @@ impl Expression {
     pub const fn span(&self) -> Span {
         match self {
             Self::Integer { span, .. }
+            | Self::Float { span, .. }
             | Self::Boolean { span, .. }
             | Self::String { span, .. }
             | Self::List { span, .. }
@@ -284,6 +289,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
         let start = index;
         match bytes[index] {
             b' ' | b'\t' | b'\r' | b'\n' => index += 1,
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 index += 1;
                 while matches!(
@@ -299,7 +310,18 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 while matches!(bytes.get(index), Some(b'0'..=b'9')) {
                     index += 1;
                 }
-                tokens.push(token(TokenKind::Integer, start, index));
+                let kind = if bytes.get(index) == Some(&b'.')
+                    && matches!(bytes.get(index + 1), Some(b'0'..=b'9'))
+                {
+                    index += 2;
+                    while matches!(bytes.get(index), Some(b'0'..=b'9')) {
+                        index += 1;
+                    }
+                    TokenKind::Float
+                } else {
+                    TokenKind::Integer
+                };
+                tokens.push(token(kind, start, index));
             }
             b'"' => {
                 index += 1;
@@ -631,6 +653,14 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                     message: "integer literal is outside the M3 supported range".to_owned(),
                 })?;
                 Ok(Expression::Integer {
+                    value,
+                    span: token.span,
+                })
+            }
+            TokenKind::Float => {
+                self.advance();
+                let value = self.text_for(&token).to_owned();
+                Ok(Expression::Float {
                     value,
                     span: token.span,
                 })

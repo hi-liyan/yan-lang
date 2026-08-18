@@ -202,6 +202,7 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             calls
         }
         Expression::Integer { .. }
+        | Expression::Float { .. }
         | Expression::Boolean { .. }
         | Expression::String { .. }
         | Expression::Variable { .. } => Vec::new(),
@@ -420,6 +421,7 @@ fn type_of(
 ) -> Result<Type, TypeError> {
     match expression {
         Expression::Integer { .. } => Ok(Type::Int),
+        Expression::Float { .. } => Ok(Type::Float),
         Expression::Boolean { .. } => Ok(Type::Bool),
         Expression::String { parts, .. } => {
             for part in parts {
@@ -483,6 +485,29 @@ fn type_of(
                     "M3 `==` only supports matching int, bool, or string operands",
                 ))
             }
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.iter().map(String::as_str).eq(["bytes", "from_hex"]) => {
+            if arguments.len() != 1 {
+                return Err(error(*span, "bytes.from_hex requires exactly one argument"));
+            }
+            if type_of(
+                &arguments[0],
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )? != Type::String
+            {
+                return Err(error(
+                    arguments[0].span(),
+                    "bytes.from_hex requires a string argument",
+                ));
+            }
+            Ok(Type::Bytes)
         }
         Expression::Call {
             path,

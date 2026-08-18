@@ -87,6 +87,10 @@ pub struct Parameter {
 pub enum Type {
     /// 有符号 64 位整数。
     Int,
+    /// IEEE 754 双精度浮点数。
+    Float,
+    /// 不可变字节序列。
+    Bytes,
     /// 布尔值。
     Bool,
     /// UTF-8 文本。
@@ -125,6 +129,8 @@ pub enum Statement {
 pub enum Expression {
     /// 整数字面量。
     Integer { value: i64, span: Span },
+    /// 浮点数字面量。
+    Float { value: String, span: Span },
     /// 布尔字面量。
     Boolean { value: bool, span: Span },
     /// 由文本和变量插值片段构成的字符串字面量。
@@ -178,6 +184,7 @@ impl Expression {
     pub const fn span(&self) -> Span {
         match self {
             Self::Integer { span, .. }
+            | Self::Float { span, .. }
             | Self::Boolean { span, .. }
             | Self::String { span, .. }
             | Self::List { span, .. }
@@ -313,6 +320,8 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
     };
     match (ty.name.as_str(), ty.arguments.as_slice()) {
         ("int", []) => Ok(Type::Int),
+        ("float", []) => Ok(Type::Float),
+        ("bytes", []) => Ok(Type::Bytes),
         ("bool", []) => Ok(Type::Bool),
         ("string", []) => Ok(Type::String),
         ("unit", []) => Ok(Type::Unit),
@@ -355,6 +364,7 @@ fn lower_statement(statement: SyntaxStatement) -> Result<Statement, LowerError> 
 fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerError> {
     Ok(match expression {
         SyntaxExpression::Integer { value, span } => Expression::Integer { value, span },
+        SyntaxExpression::Float { value, span } => Expression::Float { value, span },
         SyntaxExpression::Boolean { value, span } => Expression::Boolean { value, span },
         SyntaxExpression::String { value, span } => Expression::String {
             parts: lower_string_parts(&value, span)?,

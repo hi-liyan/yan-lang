@@ -38,6 +38,8 @@ impl EvalError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Value {
     Integer(i64),
+    Float(String),
+    Bytes(String),
     Boolean(bool),
     String(String),
     List(Vec<Value>),
@@ -53,6 +55,8 @@ impl Value {
     fn display(&self) -> String {
         match self {
             Self::Integer(value) => value.to_string(),
+            Self::Float(value) => value.clone(),
+            Self::Bytes(value) => format!("0x{value}"),
             Self::Boolean(value) => value.to_string(),
             Self::String(value) => value.clone(),
             Self::List(values) => {
@@ -143,6 +147,7 @@ fn evaluate(
 ) -> Result<Value, EvalError> {
     match expression {
         Expression::Integer { value, .. } => Ok(Value::Integer(*value)),
+        Expression::Float { value, .. } => Ok(Value::Float(value.clone())),
         Expression::Boolean { value, .. } => Ok(Value::Boolean(*value)),
         Expression::String { parts, .. } => render_string(parts, bindings),
         Expression::List { values, .. } => values
@@ -250,6 +255,31 @@ fn evaluate(
                     "field access requires a struct value",
                 )),
             }
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.iter().map(String::as_str).eq(["bytes", "from_hex"]) => {
+            let Some(argument) = arguments.first() else {
+                return Err(EvalError::new(
+                    *span,
+                    "bytes.from_hex is missing an argument",
+                ));
+            };
+            let Value::String(value) = evaluate(argument, program, bindings, output)? else {
+                return Err(EvalError::new(
+                    *span,
+                    "bytes.from_hex requires a string argument",
+                ));
+            };
+            if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(EvalError::new(
+                    *span,
+                    "bytes.from_hex requires an even-length hexadecimal string",
+                ));
+            }
+            Ok(Value::Bytes(value))
         }
         Expression::Call {
             path,

@@ -8,7 +8,7 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 
 ## 当前阶段
 
-当前处于 M4“新类型与结构体”阶段：以已确认的 `03-structs/01_structs.yan` 为新增实现边界，扩展新类型、结构体字面量、字段默认值与点访问。范围与验收标准见 [M4 目标](docs/milestones/m4-structs.md)。其余语言示例仍处于 [语言示例索引](examples/language-design/README.md) 中的设计评审阶段。
+当前处于 M5“核心数据类型与注释”阶段：以 `bytes`、`map<string, T>`、`float` 与注释示例为新增实现边界。范围与验收标准见 [M5 目标](docs/milestones/m5-core-data-types.md)。其余语言示例仍处于 [语言示例索引](examples/language-design/README.md) 中的设计评审阶段。
 
 这不是可用于生产开发的语言版本。M2 仅支持值与绑定子集；其他类型、控制流、代码生成、包管理、完整标准库和平台库尚未实现。
 
