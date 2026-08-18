@@ -1,11 +1,14 @@
 [package]
-name = "yan-hir"
+name = "yan-typeck"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+yan-hir = { path = "../yan-hir" }
 yan-source = { path = "../yan-source" }
+
+[dev-dependencies]
 yan-syntax = { path = "../yan-syntax" }
 
 [lints]

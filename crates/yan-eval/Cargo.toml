@@ -1,12 +1,16 @@
 [package]
-name = "yan-hir"
+name = "yan-eval"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+yan-hir = { path = "../yan-hir" }
 yan-source = { path = "../yan-source" }
+
+[dev-dependencies]
 yan-syntax = { path = "../yan-syntax" }
+yan-typeck = { path = "../yan-typeck" }
 
 [lints]
 workspace = true

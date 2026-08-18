@@ -3,8 +3,22 @@
 version = 4
 
 [[package]]
+name = "yan-eval"
+version = "0.1.0"
+dependencies = [
+ "yan-hir",
+ "yan-source",
+ "yan-syntax",
+ "yan-typeck",
+]
+
+[[package]]
 name = "yan-hir"
 version = "0.1.0"
+dependencies = [
+ "yan-source",
+ "yan-syntax",
+]
 
 [[package]]
 name = "yan-source"
@@ -18,9 +32,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "yan-typeck"
+version = "0.1.0"
+dependencies = [
+ "yan-hir",
+ "yan-source",
+ "yan-syntax",
+]
+
+[[package]]
 name = "yanc"
 version = "0.1.0"
 dependencies = [
+ "yan-eval",
+ "yan-hir",
  "yan-source",
  "yan-syntax",
+ "yan-typeck",
 ]

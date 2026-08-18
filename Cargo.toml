@@ -3,6 +3,8 @@ members = [
   "crates/yan-source",
   "crates/yan-syntax",
   "crates/yan-hir",
+  "crates/yan-typeck",
+  "crates/yan-eval",
   "crates/yanc",
 ]
 resolver = "2"

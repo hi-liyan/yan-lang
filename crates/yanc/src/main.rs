@@ -1,9 +1,16 @@
+//! Yan 编译器命令行入口。
+//!
+//! CLI 只负责读取源码、编排编译阶段和展示诊断，不包含 lexer、parser、类型检查或执行规则。
+
 use std::{env, fs, path::Path, process::ExitCode};
 
-use yan_source::SourceFile;
-use yan_syntax::lex;
+use yan_eval::execute;
+use yan_hir::{lower, Program};
+use yan_source::{SourceFile, Span};
+use yan_syntax::{lex, parse};
+use yan_typeck::check;
 
-const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc --help";
+const USAGE: &str = "用法:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
 
 fn main() -> ExitCode {
     match env::args().skip(1).collect::<Vec<_>>().as_slice() {
@@ -11,7 +18,8 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        [command, path] if command == "check" => check(Path::new(path)),
+        [command, path] if command == "check" => check_command(Path::new(path)),
+        [command, path] if command == "run" => run_command(Path::new(path)),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -19,37 +27,89 @@ fn main() -> ExitCode {
     }
 }
 
-fn check(path: &Path) -> ExitCode {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) => {
-            eprintln!("{}: {error}", path.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let source = SourceFile::new(path, text);
-
-    match lex(source.text()) {
-        Ok(tokens) => {
-            println!(
-                "{}: checked {} tokens",
-                source.path().display(),
-                tokens.len()
-            );
+fn check_command(path: &Path) -> ExitCode {
+    match compile(path) {
+        Ok(_) => {
+            println!("{}: 检查通过", path.display());
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            // lexer 仅从同一份不可变源码生成 span，因此错误起点必定是有效 UTF-8 边界；
-            // 若该不变量被破坏，说明是编译器缺陷，而不是用户输入错误。
-            let (line, column) = source
-                .line_column(error.span.start)
-                .expect("lexer 产生的 span 必须是有效的源码偏移");
-            eprintln!(
-                "{}:{line}:{column}: error: {}",
-                source.path().display(),
-                error.message
-            );
-            ExitCode::FAILURE
-        }
+        Err(diagnostic) => render_diagnostic(&diagnostic),
     }
+}
+
+fn run_command(path: &Path) -> ExitCode {
+    let compiled = match compile(path) {
+        Ok(compiled) => compiled,
+        Err(diagnostic) => return render_diagnostic(&diagnostic),
+    };
+
+    match execute(&compiled.program) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_diagnostic(&Diagnostic {
+            source: compiled.source,
+            span: error.span,
+            message: error.message,
+        }),
+    }
+}
+
+fn compile(path: &Path) -> Result<CompiledProgram, Diagnostic> {
+    let text = fs::read_to_string(path).map_err(|error| Diagnostic {
+        source: SourceFile::new(path, ""),
+        span: Span::default(),
+        message: error.to_string(),
+    })?;
+    let source = SourceFile::new(path, text);
+    let tokens = lex(source.text()).map_err(|error| Diagnostic {
+        source: source.clone(),
+        span: error.span,
+        message: error.message,
+    })?;
+    let syntax = parse(source.text(), &tokens).map_err(|error| Diagnostic {
+        source: source.clone(),
+        span: error.span,
+        message: error.message,
+    })?;
+    let program = lower(syntax).map_err(|error| Diagnostic {
+        source: source.clone(),
+        span: error.span,
+        message: error.message,
+    })?;
+    check(&program).map_err(|error| Diagnostic {
+        source: source.clone(),
+        span: error.span,
+        message: error.message,
+    })?;
+    Ok(CompiledProgram { source, program })
+}
+
+/// 同时保存已检查 HIR 与其原始文本，供后续阶段复用相同的诊断坐标。
+struct CompiledProgram {
+    source: SourceFile,
+    program: Program,
+}
+
+struct Diagnostic {
+    source: SourceFile,
+    span: Span,
+    message: String,
+}
+
+fn render_diagnostic(diagnostic: &Diagnostic) -> ExitCode {
+    // 编译阶段产生的 span 均来自 SourceFile；无效位置只可能来自读取文件失败这类无源码场景。
+    let (line, column) = diagnostic
+        .source
+        .line_column(diagnostic.span.start)
+        .unwrap_or((1, 1));
+    eprintln!(
+        "{}:{line}:{column}: 错误: {}",
+        diagnostic.source.path().display(),
+        diagnostic.message
+    );
+    ExitCode::FAILURE
 }

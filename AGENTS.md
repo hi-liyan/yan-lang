@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M0 语言示例评审。除维护已有 `yanc check` 外，只允许新增或修改 `examples/language-design/` 中的语法提案及其评审文档。用户确认 M0 前，禁止加入 parser、AST、名称解析、类型检查、代码生成、包管理、formatter、依赖分层检查、capability 检查、async、HTTP、数据库和平台标准库。
+当前处于 M2 可执行值与绑定子集。只允许实现 `docs/milestones/m2-executable-values.md` 中列出的 `01_values.yan` 语法、类型检查、解释执行和诊断。除维护已有功能外，禁止加入其他函数、控制流、struct、enum、option、result、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 
@@ -28,6 +28,8 @@
 | `yan-source` | 源文件、位置、span 和诊断位置基础数据 | Rust 标准库 |
 | `yan-syntax` | token、lexer，以及后续纯语法层能力 | `yan-source` |
 | `yan-hir` | 与后端无关的稳定高层中间表示 | Rust 标准库；后续仅增加前端数据 crate |
+| `yan-typeck` | HIR 的类型检查与语义诊断 | `yan-hir`、`yan-source` |
+| `yan-eval` | 已通过类型检查的 HIR 的受限解释执行 | `yan-hir` |
 | `yanc` | CLI、文件读取、编译流程编排和诊断展示 | 所有前端 crate |
 
 必须遵守：
@@ -36,6 +38,8 @@
 - `yan-source` 不得知道 token、AST、HIR、CLI 或代码生成概念。
 - `yan-syntax` 只能处理源文本与语法，不得读取文件、访问环境变量或决定 CLI 行为。
 - `yan-hir` 不得引入 Rust 后端、HTTP、数据库或其他平台类型。
+- `yan-typeck` 不得读取文件、输出文本或执行程序；它只验证 HIR。
+- `yan-eval` 不得重新实现解析或类型规则；它只执行已通过类型检查的 HIR。
 - `yanc` 只负责编排，不得把 lexer、parser、类型检查规则复制到 CLI 中。
 - 未来代码生成必须消费 HIR，禁止从 token 或 AST 直接生成 Rust。
 
