@@ -1,6 +1,6 @@
 # M2：可执行值与绑定子集
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/01_values.yan` 能被 `yanc run` 检查并执行
 
 ## 前提
@@ -20,7 +20,6 @@ cargo run -p yanc -- run examples/language-design/01_values.yan
 ```text
 Yan
 1
-true
 ```
 
 并且：

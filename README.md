@@ -8,7 +8,7 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 
 ## 当前阶段
 
-当前处于 M2“可执行值与绑定子集”阶段：以已确认的 `01_values.yan` 为唯一实现边界，建立 parser、HIR、类型检查和解释执行闭环。范围与验收标准见 [M2 目标](docs/milestones/m2-executable-values.md)。其余语言示例仍处于 [M0 评审](examples/language-design/README.md)。
+当前处于 M3“函数与字符串插值”阶段：以已确认的 `02_functions.yan` 为新增实现边界，扩展函数调用、返回值和字符串插值。范围与验收标准见 [M3 目标](docs/milestones/m3-functions.md)。其余语言示例仍处于 [M0 评审](examples/language-design/README.md)。
 
 这不是可用于生产开发的语言版本。M2 仅支持值与绑定子集；其他类型、控制流、代码生成、包管理、完整标准库和平台库尚未实现。
 
@@ -20,9 +20,10 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 cargo run -p yanc -- --help
 cargo run -p yanc -- check examples/language-design/01_values.yan
 cargo run -p yanc -- run examples/language-design/01_values.yan
+cargo run -p yanc -- run examples/language-design/02_functions.yan
 ```
 
-`check` 当前可检查 M2 的值与绑定子集。`run` 可解释执行已确认的 `01_values.yan`，输出 `Yan`、`1` 与 `true`。其他 `examples/language-design/` 提案仍不能使用这些命令检查。
+`check` 当前可检查 M2 的值与绑定子集。`run` 可解释执行已确认的 `01_values.yan`，输出 `Yan` 与 `1`；也可执行 M3 的 `02_functions.yan`，输出 `total: 597`。其他 `examples/language-design/` 提案仍不能使用这些命令检查。
 
 ## 仓库结构
 

@@ -10,7 +10,8 @@ use yan_source::{SourceFile, Span};
 use yan_syntax::{lex, parse};
 use yan_typeck::check;
 
-const USAGE: &str = "用法:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
+/// `yanc` 的稳定帮助文本。CLI 面向用户的全部输出均使用英文。
+const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
 
 fn main() -> ExitCode {
     match env::args().skip(1).collect::<Vec<_>>().as_slice() {
@@ -30,7 +31,7 @@ fn main() -> ExitCode {
 fn check_command(path: &Path) -> ExitCode {
     match compile(path) {
         Ok(_) => {
-            println!("{}: 检查通过", path.display());
+            println!("{}: check succeeded", path.display());
             ExitCode::SUCCESS
         }
         Err(diagnostic) => render_diagnostic(&diagnostic),
@@ -59,10 +60,11 @@ fn run_command(path: &Path) -> ExitCode {
 }
 
 fn compile(path: &Path) -> Result<CompiledProgram, Diagnostic> {
-    let text = fs::read_to_string(path).map_err(|error| Diagnostic {
+    let text = fs::read_to_string(path).map_err(|_| Diagnostic {
         source: SourceFile::new(path, ""),
         span: Span::default(),
-        message: error.to_string(),
+        // 不直接输出操作系统提供的错误文本，避免 CLI 在不同系统语言下产生不稳定文案。
+        message: "failed to read file".to_owned(),
     })?;
     let source = SourceFile::new(path, text);
     let tokens = lex(source.text()).map_err(|error| Diagnostic {
@@ -107,7 +109,7 @@ fn render_diagnostic(diagnostic: &Diagnostic) -> ExitCode {
         .line_column(diagnostic.span.start)
         .unwrap_or((1, 1));
     eprintln!(
-        "{}:{line}:{column}: 错误: {}",
+        "error: {}:{line}:{column}: {}",
         diagnostic.source.path().display(),
         diagnostic.message
     );

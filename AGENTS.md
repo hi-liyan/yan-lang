@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M2 可执行值与绑定子集。只允许实现 `docs/milestones/m2-executable-values.md` 中列出的 `01_values.yan` 语法、类型检查、解释执行和诊断。除维护已有功能外，禁止加入其他函数、控制流、struct、enum、option、result、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M3 函数与字符串插值。只允许实现 `docs/milestones/m3-functions.md` 中列出的 `02_functions.yan` 语法、类型检查、解释执行和诊断，并保持 M2 可用。除维护已有功能外，禁止加入 `return`、递归、闭包、函数值、函数重载、默认参数、泛型函数、控制流、struct、enum、option、result、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 
@@ -50,6 +50,9 @@
 - 不得把 HTTP、路由、数据库、ORM、middleware 或 AI provider 设计为 Yan 关键字；它们只能在未来以平台库形式出现。
 - 新增 Rust 第三方依赖前，必须说明其解决的当前问题、替代方案和体积/维护影响。优先使用标准库。
 - 诊断信息必须稳定、可定位、面向用户；不得用 `panic!` 报告普通用户输入错误。
+- `yanc` 面向用户的命令行输出必须统一使用英文，包括标准输出、错误输出和诊断文本；不得在同一条 CLI 输出中混用中文。Yan 程序自身写出的运行时数据不属于 CLI 文案，必须原样转发。源码注释、Rustdoc 与设计文档继续使用中文。
+- 默认人类可读输出必须遵守 `docs/yan-language-design.md` 的“`yanc` 文本输出契约”：帮助为 `Usage:` 格式，`check` 成功为 `<path>: check succeeded`，诊断为 `error: <path>:<line>:<column>: <message>`。新增命令必须先补充语言设计中的输出与退出码约定。
+- 诊断 `<message>` 必须使用不带句号的简短英文句式；普通英文单词使用小写，语言名与版本号可保留其正式大小写；源码标识符、类型、模块路径和源码片段用反引号包围。不得透传操作系统本地化错误文本、Rust 类型名、调用栈或实现细节。
 - 除不可恢复的编译器内部不变量外，禁止 `unwrap`、`expect` 和 `panic!`。内部不变量的 `expect` 必须说明其成立原因。
 
 ## 5. 代码与注释规范
