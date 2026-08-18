@@ -1,0 +1,17 @@
+module examples.modules.application
+
+import examples.modules.domain.Task
+import examples.modules.domain.TaskId
+import examples.modules.domain.rename_task
+import yan.platform.console
+
+fn main() -> unit {
+  let task = Task {
+    id: TaskId(1)
+    title: "review Yan syntax"
+    completed: false
+  }
+  let renamed = rename_task(task, "approve Yan syntax")
+
+  console.println(renamed.title)
+}

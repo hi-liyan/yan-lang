@@ -1,0 +1,16 @@
+module examples.functions
+
+import yan.platform.console
+
+fn calculate_total(unit_price: int, quantity: int) -> int {
+  unit_price * quantity
+}
+
+fn format_total(total: int) -> string {
+  "total: {total}"
+}
+
+fn main() -> unit {
+  let total = calculate_total(199, 3)
+  console.println(format_total(total))
+}

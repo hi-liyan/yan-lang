@@ -94,6 +94,20 @@ v0.1 不支持类、继承、反射、宏、用户自定义运算符、异常、
 
 这些限制不是表达能力缺陷，而是控制项目状态空间的机制。需要复用逻辑时使用普通函数、组合和封闭数据类型。
 
+### 4.4 模块与文件
+
+一个 `.yan` 文件对应一个 module。目录只负责组织模块命名空间，不构成独立 module；Yan 不使用 `mod.yan`、`mod.rs`、内联模块或额外文件加载声明。
+
+源文件可在文件头显式声明模块：
+
+```yan
+module tasks.service
+```
+
+也可省略该声明。省略时，编译器从项目 `src/` 下的文件路径推导模块名；例如 `src/tasks/service.yan` 对应 `tasks.service`。显式声明存在时必须与路径推导结果完全一致，否则为编译错误。
+
+`package` 保留给未来 `yan.project` 中可发布、可依赖和带版本的交付单元，不作为源文件命名空间关键字。
+
 ## 5. 可维护性即语言能力
 
 Yan 的核心差异化在于可强制执行的项目契约。
@@ -159,6 +173,8 @@ Yan 标准库分为两层：
 `yan.platform` 的实现优先包装稳定 Rust crate，并保持 Yan 侧 API 独立稳定。个人项目只需使用官方选定组合，而不是每次从数个 Rust 框架中挑选。
 
 第三方生态接入采用 adapter 包：由 Rust crate 实现，向 Yan 暴露受限、文档化、类型稳定的 API。v0.1 禁止 Yan 直接调用任意 Rust API，防止 Rust 类型系统和生命周期细节泄漏进 Yan。
+
+Rust adapter 的边界约束与未决问题见 [Rust 生态互操作探讨](discussions/rust-interoperability.md)。
 
 ## 8. Web 是第一个平台，而不是语言本体
 

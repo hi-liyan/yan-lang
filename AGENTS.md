@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前 M1 只允许实现源码位置、词法分析、基础诊断和 `yanc check`。没有新里程碑前，禁止加入 parser、AST、名称解析、类型检查、代码生成、包管理、formatter、依赖分层检查、capability 检查、async、HTTP、数据库和平台标准库。
+当前处于 M0 语言示例评审。除维护已有 `yanc check` 外，只允许新增或修改 `examples/language-design/` 中的语法提案及其评审文档。用户确认 M0 前，禁止加入 parser、AST、名称解析、类型检查、代码生成、包管理、formatter、依赖分层检查、capability 检查、async、HTTP、数据库和平台标准库。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

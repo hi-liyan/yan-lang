@@ -1,0 +1,21 @@
+module examples.web
+
+import yan.platform.http
+import yan.platform.json
+
+struct Health {
+  status: string
+}
+
+fn health(request: http.Request) -> http.Response {
+  let body = Health { status: "ok" }
+  http.ok(json.encode(body))
+}
+
+fn main() -> result<int, http.Error> {
+  let server = http.server()
+    .get("/health", health)
+
+  server.listen("0.0.0.0:8080")?
+  Ok(0)
+}

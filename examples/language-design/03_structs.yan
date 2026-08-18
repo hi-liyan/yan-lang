@@ -1,0 +1,26 @@
+module examples.structs
+
+import yan.platform.console
+
+type UserId = int
+
+struct User {
+  id: UserId
+  name: string
+  email: string
+  active: bool = true
+}
+
+fn display_name(user: User) -> string {
+  user.name
+}
+
+fn main() -> unit {
+  let user = User {
+    id: UserId(42)
+    name: "Lin"
+    email: "lin@example.com"
+  }
+
+  console.println(display_name(user))
+}

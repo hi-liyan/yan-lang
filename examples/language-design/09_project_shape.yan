@@ -1,0 +1,25 @@
+module examples.tasks.domain
+
+type TaskId = int
+
+struct Task {
+  id: TaskId
+  title: string
+  completed: bool
+}
+
+enum RenameTaskError {
+  EmptyTitle
+}
+
+fn rename_task(task: Task, title: string) -> result<Task, RenameTaskError> {
+  if title.is_blank() {
+    return Err(RenameTaskError.EmptyTitle)
+  }
+
+  Ok(Task {
+    id: task.id
+    title: title
+    completed: task.completed
+  })
+}

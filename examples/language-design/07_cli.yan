@@ -1,0 +1,15 @@
+module examples.cli
+
+import yan.platform.cli
+import yan.platform.console
+
+fn greet(name: string) -> unit {
+  console.println("hello, {name}")
+}
+
+fn main() -> result<int, cli.Error> {
+  let name = cli.argument("name")?
+  greet(name)
+
+  Ok(0)
+}

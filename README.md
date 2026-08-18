@@ -8,9 +8,9 @@ Yan 是一门通用编译型语言，而不是 Web DSL。它以小型语言核�
 
 ## 当前阶段
 
-当前处于 M1“编译器前端地基”阶段：建立 Rust workspace，并提供源文件位置模型、最小词法分析器和 `yanc check` 命令。完整目标见 [M1 目标](docs/milestones/m1-compiler-foundation.md)。
+当前处于 M0“语言示例评审”阶段：先审核 Yan 的表层语法和使用体验，再继续实现 compiler parser、类型检查与代码生成。示例索引见 [语言示例评审](examples/language-design/README.md)，阶段门槛见 [M0 目标](docs/milestones/m0-language-example-review.md)。
 
-这不是可用于生产开发的语言版本。类型检查、解析、代码生成、包管理、标准库和平台库尚未实现。
+这不是可用于生产开发的语言版本。当前 `yanc` 仅有最小词法分析能力；类型检查、解析、代码生成、包管理、标准库和平台库尚未实现。
 
 ## 快速开始
 
@@ -21,7 +21,7 @@ cargo run -p yanc -- --help
 cargo run -p yanc -- check examples/hello.yan
 ```
 
-`check` 当前只执行词法分析，并验证源文件可以被读取；它尚不代表完整语法或类型检查。
+`check` 当前只执行词法分析，并验证源文件可以被读取；它尚不代表完整语法或类型检查。`examples/language-design/` 中的语法提案暂不能使用该命令检查。
 
 ## 仓库结构
 

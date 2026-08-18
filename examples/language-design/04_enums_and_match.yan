@@ -1,0 +1,23 @@
+module examples.enums
+
+import yan.platform.console
+
+enum BuildState {
+  Waiting
+  Running
+  Succeeded
+  Failed(reason: string)
+}
+
+fn display_state(state: BuildState) -> string {
+  match state {
+    BuildState.Waiting => "waiting"
+    BuildState.Running => "running"
+    BuildState.Succeeded => "succeeded"
+    BuildState.Failed(reason) => "failed: {reason}"
+  }
+}
+
+fn main() -> unit {
+  console.println(display_state(BuildState.Succeeded))
+}

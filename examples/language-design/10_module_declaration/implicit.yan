@@ -1,0 +1,3 @@
+public fn greeting() -> string {
+  "hello from a path-derived module"
+}

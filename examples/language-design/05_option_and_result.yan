@@ -1,0 +1,27 @@
+module examples.errors
+
+import yan.platform.console
+
+enum ConfigError {
+  MissingPort
+  InvalidPort(value: string)
+}
+
+fn parse_port(value: option<string>) -> result<int, ConfigError> {
+  let text = match value {
+    Some(text) => text
+    None => return Err(ConfigError.MissingPort)
+  }
+
+  match text.to_int() {
+    Ok(port) => Ok(port)
+    Err(_) => Err(ConfigError.InvalidPort(text))
+  }
+}
+
+fn main() -> result<int, ConfigError> {
+  let port = parse_port(Some("8080"))?
+  console.println(port)
+
+  Ok(0)
+}
