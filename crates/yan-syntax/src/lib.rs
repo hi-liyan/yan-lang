@@ -83,8 +83,49 @@ pub struct SyntaxProgram {
     pub module: Option<ModulePath>,
     /// 源文件显式引入的平台模块。
     pub imports: Vec<Import>,
+    /// 源文件中的新类型声明。
+    pub newtypes: Vec<Newtype>,
+    /// 源文件中的结构体声明。
+    pub structs: Vec<Struct>,
     /// 源文件中的函数定义。
     pub functions: Vec<Function>,
+}
+
+/// 真正的新类型声明，而非其底层类型的别名。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Newtype {
+    /// 新类型名称。
+    pub name: String,
+    /// 新类型名称的位置。
+    pub name_span: Span,
+    /// 被包装的底层类型。
+    pub underlying: TypeSyntax,
+}
+
+/// 具名结构体声明。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Struct {
+    /// 结构体名称。
+    pub name: String,
+    /// 结构体名称的位置。
+    pub name_span: Span,
+    /// 按声明顺序排列的字段。
+    pub fields: Vec<Field>,
+}
+
+/// 结构体声明或字面量中的一个具名字段。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Field {
+    /// 字段名称。
+    pub name: String,
+    /// 字段名称的位置。
+    pub name_span: Span,
+    /// 声明字段的类型；字面量字段没有类型标注。
+    pub ty: Option<TypeSyntax>,
+    /// 声明字段的可选默认值；字面量字段没有默认值。
+    pub default: Option<Expression>,
+    /// 字面量字段的可选显式值；声明字段没有显式值。
+    pub value: Option<Expression>,
 }
 
 /// 用点分隔的模块路径。
@@ -198,6 +239,20 @@ pub enum Expression {
         right: Box<Expression>,
         span: Span,
     },
+    /// 具名结构体字面量。
+    StructLiteral {
+        name: String,
+        name_span: Span,
+        fields: Vec<Field>,
+        span: Span,
+    },
+    /// 结构体字段读取。
+    FieldAccess {
+        target: Box<Expression>,
+        field: String,
+        field_span: Span,
+        span: Span,
+    },
 }
 
 impl Expression {
@@ -212,7 +267,9 @@ impl Expression {
             | Self::Call { span, .. }
             | Self::Add { span, .. }
             | Self::Multiply { span, .. }
-            | Self::Equal { span, .. } => *span,
+            | Self::Equal { span, .. }
+            | Self::StructLiteral { span, .. }
+            | Self::FieldAccess { span, .. } => *span,
         }
     }
 }
@@ -327,15 +384,70 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             });
         }
 
+        let mut newtypes = Vec::new();
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
-            functions.push(self.parse_function()?);
+            match self.peek_text() {
+                Some("type") => newtypes.push(self.parse_newtype()?),
+                Some("struct") => structs.push(self.parse_struct()?),
+                Some("fn") => functions.push(self.parse_function()?),
+                _ => return Err(self.error_here("a declaration")),
+            }
         }
 
         Ok(SyntaxProgram {
             module,
             imports,
+            newtypes,
+            structs,
             functions,
+        })
+    }
+
+    fn parse_newtype(&mut self) -> Result<Newtype, ParseError> {
+        self.consume_text("type", "a newtype declaration")?;
+        let (name, name_span) = self.consume_identifier("newtype name")?;
+        self.consume_kind(TokenKind::Equals, "`=`")?;
+        let underlying = self.parse_type()?;
+        Ok(Newtype {
+            name,
+            name_span,
+            underlying,
+        })
+    }
+
+    fn parse_struct(&mut self) -> Result<Struct, ParseError> {
+        self.consume_text("struct", "a struct declaration")?;
+        let (name, name_span) = self.consume_identifier("struct name")?;
+        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut fields = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            fields.push(self.parse_struct_field()?);
+        }
+        self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(Struct {
+            name,
+            name_span,
+            fields,
+        })
+    }
+
+    fn parse_struct_field(&mut self) -> Result<Field, ParseError> {
+        let (name, name_span) = self.consume_identifier("field name")?;
+        self.consume_kind(TokenKind::Colon, "`:`")?;
+        let ty = self.parse_type()?;
+        let default = if self.consume_if(TokenKind::Equals).is_some() {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        Ok(Field {
+            name,
+            name_span,
+            ty: Some(ty),
+            default,
+            value: None,
         })
     }
 
@@ -565,11 +677,17 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             });
         }
 
+        if self.at_kind(TokenKind::LeftBrace) {
+            return self.parse_struct_literal(first, first_span);
+        }
+
         let mut path = vec![first];
         let mut end = first_span.end;
+        let mut last_span = first_span;
         while self.consume_if(TokenKind::Dot).is_some() {
             let (segment, span) = self.consume_identifier("call path segment")?;
             end = span.end;
+            last_span = span;
             path.push(segment);
         }
 
@@ -596,9 +714,49 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             });
         }
 
+        if path.len() == 2 {
+            return Ok(Expression::FieldAccess {
+                target: Box::new(Expression::Variable {
+                    name: path.remove(0),
+                    span: first_span,
+                }),
+                field: path.remove(0),
+                field_span: last_span,
+                span: Span::new(first_span.start, end),
+            });
+        }
+
         Err(ParseError {
             span: Span::new(first_span.start, end),
             message: "M3 only permits dotted paths for function calls".to_owned(),
+        })
+    }
+
+    fn parse_struct_literal(
+        &mut self,
+        name: String,
+        name_span: Span,
+    ) -> Result<Expression, ParseError> {
+        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut fields = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            let (field_name, field_span) = self.consume_identifier("field name")?;
+            self.consume_kind(TokenKind::Colon, "`:`")?;
+            let value = self.parse_expression()?;
+            fields.push(Field {
+                name: field_name,
+                name_span: field_span,
+                ty: None,
+                default: None,
+                value: Some(value),
+            });
+        }
+        let closing = self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(Expression::StructLiteral {
+            name,
+            name_span,
+            fields,
+            span: Span::new(name_span.start, closing.span.end),
         })
     }
 

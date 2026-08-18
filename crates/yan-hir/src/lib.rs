@@ -2,7 +2,8 @@
 
 use yan_source::Span;
 use yan_syntax::{
-    Expression as SyntaxExpression, Statement as SyntaxStatement, SyntaxProgram, TypeSyntax,
+    Expression as SyntaxExpression, Field as SyntaxField, Statement as SyntaxStatement,
+    SyntaxProgram, TypeSyntax,
 };
 
 /// 已降低为编译器语义阶段使用的程序。
@@ -12,8 +13,47 @@ pub struct Program {
     pub module: Option<Vec<String>>,
     /// 显式导入的模块路径。
     pub imports: Vec<Vec<String>>,
+    /// 源文件中的真正新类型声明。
+    pub newtypes: Vec<Newtype>,
+    /// 源文件中的结构体声明。
+    pub structs: Vec<Struct>,
     /// 程序定义的函数。
     pub functions: Vec<Function>,
+}
+
+/// 已 lowering 的真正新类型声明。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Newtype {
+    /// 新类型名称。
+    pub name: String,
+    /// 新类型名称的位置。
+    pub name_span: Span,
+    /// 新类型包装的底层类型。
+    pub underlying: Type,
+}
+
+/// 已 lowering 的具名结构体声明。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Struct {
+    /// 结构体名称。
+    pub name: String,
+    /// 结构体名称的位置。
+    pub name_span: Span,
+    /// 按声明顺序排列的字段。
+    pub fields: Vec<Field>,
+}
+
+/// 已 lowering 的结构体字段。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Field {
+    /// 字段名称。
+    pub name: String,
+    /// 字段名称的位置。
+    pub name_span: Span,
+    /// 字段类型。
+    pub ty: Type,
+    /// 声明时给出的可选默认值。
+    pub default: Option<Expression>,
 }
 
 /// M3 支持的函数定义。
@@ -55,6 +95,8 @@ pub enum Type {
     Unit,
     /// 元素类型统一的有序列表。
     List(Box<Type>),
+    /// 由源文件声明的名义类型，包括新类型和结构体。
+    Named(String),
 }
 
 /// HIR 语句。
@@ -115,6 +157,20 @@ pub enum Expression {
         right: Box<Expression>,
         span: Span,
     },
+    /// 具名结构体字面量。
+    StructLiteral {
+        name: String,
+        name_span: Span,
+        fields: Vec<StructFieldValue>,
+        span: Span,
+    },
+    /// 结构体字段读取。
+    FieldAccess {
+        target: Box<Expression>,
+        field: String,
+        field_span: Span,
+        span: Span,
+    },
 }
 
 impl Expression {
@@ -130,8 +186,20 @@ impl Expression {
             | Self::Add { span, .. }
             | Self::Multiply { span, .. }
             | Self::Equal { span, .. } => *span,
+            Self::StructLiteral { span, .. } | Self::FieldAccess { span, .. } => *span,
         }
     }
+}
+
+/// 结构体字面量中的一个具名字段赋值。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StructFieldValue {
+    /// 字段名称。
+    pub name: String,
+    /// 字段名称的位置。
+    pub name_span: Span,
+    /// 字段值表达式。
+    pub value: Expression,
 }
 
 /// 字符串字面量的组成部分。
@@ -152,11 +220,56 @@ pub fn lower(program: SyntaxProgram) -> Result<Program, LowerError> {
             .into_iter()
             .map(|import| import.path.segments)
             .collect(),
+        newtypes: program
+            .newtypes
+            .into_iter()
+            .map(lower_newtype)
+            .collect::<Result<Vec<_>, _>>()?,
+        structs: program
+            .structs
+            .into_iter()
+            .map(lower_struct)
+            .collect::<Result<Vec<_>, _>>()?,
         functions: program
             .functions
             .into_iter()
             .map(lower_function)
             .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn lower_newtype(newtype: yan_syntax::Newtype) -> Result<Newtype, LowerError> {
+    Ok(Newtype {
+        name: newtype.name,
+        name_span: newtype.name_span,
+        underlying: lower_type(newtype.underlying)?,
+    })
+}
+
+fn lower_struct(structure: yan_syntax::Struct) -> Result<Struct, LowerError> {
+    Ok(Struct {
+        name: structure.name,
+        name_span: structure.name_span,
+        fields: structure
+            .fields
+            .into_iter()
+            .map(lower_declared_field)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn lower_declared_field(field: SyntaxField) -> Result<Field, LowerError> {
+    let Some(ty) = field.ty else {
+        return Err(LowerError {
+            span: field.name_span,
+            message: "struct field is missing a type".to_owned(),
+        });
+    };
+    Ok(Field {
+        name: field.name,
+        name_span: field.name_span,
+        ty: lower_type(ty)?,
+        default: field.default.map(lower_expression).transpose()?,
     })
 }
 
@@ -204,6 +317,7 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
         ("string", []) => Ok(Type::String),
         ("unit", []) => Ok(Type::Unit),
         ("list", [element]) => Ok(Type::List(Box::new(lower_type(element.clone())?))),
+        (name, []) => Ok(Type::Named(name.to_owned())),
         _ => Err(unsupported()),
     }
 }
@@ -281,6 +395,45 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             right: Box::new(lower_expression(*right)?),
             span,
         },
+        SyntaxExpression::StructLiteral {
+            name,
+            name_span,
+            fields,
+            span,
+        } => Expression::StructLiteral {
+            name,
+            name_span,
+            fields: fields
+                .into_iter()
+                .map(lower_struct_field_value)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::FieldAccess {
+            target,
+            field,
+            field_span,
+            span,
+        } => Expression::FieldAccess {
+            target: Box::new(lower_expression(*target)?),
+            field,
+            field_span,
+            span,
+        },
+    })
+}
+
+fn lower_struct_field_value(field: SyntaxField) -> Result<StructFieldValue, LowerError> {
+    let Some(value) = field.value else {
+        return Err(LowerError {
+            span: field.name_span,
+            message: "struct literal field is missing a value".to_owned(),
+        });
+    };
+    Ok(StructFieldValue {
+        name: field.name,
+        name_span: field.name_span,
+        value: lower_expression(value)?,
     })
 }
 

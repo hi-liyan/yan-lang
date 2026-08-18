@@ -41,6 +41,11 @@ enum Value {
     Boolean(bool),
     String(String),
     List(Vec<Value>),
+    Newtype(String, Box<Value>),
+    Struct {
+        name: String,
+        fields: HashMap<String, Value>,
+    },
     Unit,
 }
 
@@ -58,6 +63,8 @@ impl Value {
                     .join(", ");
                 format!("[{rendered}]")
             }
+            Self::Newtype(_, value) => value.display(),
+            Self::Struct { name, .. } => name.clone(),
             Self::Unit => "unit".to_owned(),
         }
     }
@@ -185,6 +192,65 @@ fn evaluate(
                 )),
             }
         }
+        Expression::StructLiteral {
+            name, fields, span, ..
+        } => {
+            let structure = program
+                .structs
+                .iter()
+                .find(|structure| structure.name == *name)
+                .ok_or_else(|| EvalError::new(*span, format!("undefined struct `{name}`")))?;
+            let mut values = HashMap::new();
+            for field in fields {
+                if values
+                    .insert(
+                        field.name.clone(),
+                        evaluate(&field.value, program, bindings, output)?,
+                    )
+                    .is_some()
+                {
+                    return Err(EvalError::new(
+                        field.name_span,
+                        format!("field `{}` is specified more than once", field.name),
+                    ));
+                }
+            }
+            for field in &structure.fields {
+                if !values.contains_key(&field.name) {
+                    let default = field.default.as_ref().ok_or_else(|| {
+                        EvalError::new(
+                            field.name_span,
+                            format!("struct `{name}` is missing required field `{}`", field.name),
+                        )
+                    })?;
+                    values.insert(
+                        field.name.clone(),
+                        evaluate(default, program, bindings, output)?,
+                    );
+                }
+            }
+            Ok(Value::Struct {
+                name: name.clone(),
+                fields: values,
+            })
+        }
+        Expression::FieldAccess {
+            target,
+            field,
+            field_span,
+            ..
+        } => {
+            let value = evaluate(target, program, bindings, output)?;
+            match value {
+                Value::Struct { fields, .. } => fields.get(field).cloned().ok_or_else(|| {
+                    EvalError::new(*field_span, format!("undefined field `{field}`"))
+                }),
+                _ => Err(EvalError::new(
+                    *field_span,
+                    "field access requires a struct value",
+                )),
+            }
+        }
         Expression::Call {
             path,
             arguments,
@@ -199,6 +265,27 @@ fn evaluate(
             let rendered = evaluate(argument, program, bindings, output)?.display();
             output.push(rendered);
             Ok(Value::Unit)
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.len() == 1
+            && program
+                .newtypes
+                .iter()
+                .any(|newtype| newtype.name == path[0]) =>
+        {
+            let Some(argument) = arguments.first() else {
+                return Err(EvalError::new(
+                    *span,
+                    format!("newtype `{}` is missing an argument", path[0]),
+                ));
+            };
+            Ok(Value::Newtype(
+                path[0].clone(),
+                Box::new(evaluate(argument, program, bindings, output)?),
+            ))
         }
         Expression::Call {
             path,
