@@ -1,0 +1,12 @@
+[package]
+name = "yanc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+yan-source = { path = "../yan-source" }
+yan-syntax = { path = "../yan-syntax" }
+
+[lints]
+workspace = true
