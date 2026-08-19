@@ -2,8 +2,9 @@
 
 use yan_source::Span;
 use yan_syntax::{
-    Expression as SyntaxExpression, Field as SyntaxField, MapEntry as SyntaxMapEntry,
-    Statement as SyntaxStatement, SyntaxProgram, TypeSyntax,
+    Enum as SyntaxEnum, Expression as SyntaxExpression, Field as SyntaxField,
+    MapEntry as SyntaxMapEntry, MatchArm as SyntaxMatchArm, Statement as SyntaxStatement,
+    SyntaxProgram, TypeSyntax,
 };
 
 /// 已降低为编译器语义阶段使用的程序。
@@ -17,6 +18,8 @@ pub struct Program {
     pub newtypes: Vec<Newtype>,
     /// 源文件中的结构体声明。
     pub structs: Vec<Struct>,
+    /// 源文件中的封闭枚举声明。
+    pub enums: Vec<Enum>,
     /// 程序定义的函数。
     pub functions: Vec<Function>,
 }
@@ -41,6 +44,39 @@ pub struct Struct {
     pub name_span: Span,
     /// 按声明顺序排列的字段。
     pub fields: Vec<Field>,
+}
+
+/// 已 lowering 的封闭枚举声明。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Enum {
+    /// 枚举名称。
+    pub name: String,
+    /// 枚举名称在源文件中的位置。
+    pub name_span: Span,
+    /// 按声明顺序排列的变体。
+    pub variants: Vec<EnumVariant>,
+}
+
+/// 已 lowering 的枚举变体。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumVariant {
+    /// 变体名称。
+    pub name: String,
+    /// 变体名称在源文件中的位置。
+    pub name_span: Span,
+    /// 可选的单个具名载荷。
+    pub payload: Option<EnumPayload>,
+}
+
+/// 枚举单载荷变体的名称与类型。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumPayload {
+    /// 载荷名称。
+    pub name: String,
+    /// 载荷名称在源文件中的位置。
+    pub name_span: Span,
+    /// 载荷类型。
+    pub ty: Type,
 }
 
 /// 已 lowering 的结构体字段。
@@ -141,6 +177,12 @@ pub enum Expression {
     List { values: Vec<Expression>, span: Span },
     /// 键为 string 的 map 字面量。
     Map { entries: Vec<MapEntry>, span: Span },
+    /// 对 enum 值进行穷尽匹配的表达式。
+    Match {
+        target: Box<Expression>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
     /// 局部变量读取。
     Variable { name: String, span: Span },
     /// 平台或后续普通函数调用。
@@ -193,6 +235,7 @@ impl Expression {
             | Self::String { span, .. }
             | Self::List { span, .. }
             | Self::Map { span, .. }
+            | Self::Match { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -211,6 +254,30 @@ pub struct MapEntry {
     /// 键字符串字面量在源文件中的位置。
     pub key_span: Span,
     /// 与键关联的值表达式。
+    pub value: Expression,
+}
+
+/// HIR match 分支中对 enum 变体的模式。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumPattern {
+    /// 枚举名称。
+    pub enum_name: String,
+    /// 枚举名称在源文件中的位置。
+    pub enum_name_span: Span,
+    /// 变体名称。
+    pub variant: String,
+    /// 变体名称在源文件中的位置。
+    pub variant_span: Span,
+    /// 有载荷变体在分支内使用的可选局部绑定。
+    pub binding: Option<(String, Span)>,
+}
+
+/// HIR match 表达式的一个分支。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatchArm {
+    /// 分支匹配的 enum 变体模式。
+    pub pattern: EnumPattern,
+    /// 该分支被选中时求值的表达式。
     pub value: Expression,
 }
 
@@ -253,6 +320,11 @@ pub fn lower(program: SyntaxProgram) -> Result<Program, LowerError> {
             .into_iter()
             .map(lower_struct)
             .collect::<Result<Vec<_>, _>>()?,
+        enums: program
+            .enums
+            .into_iter()
+            .map(lower_enum)
+            .collect::<Result<Vec<_>, _>>()?,
         functions: program
             .functions
             .into_iter()
@@ -278,6 +350,33 @@ fn lower_struct(structure: yan_syntax::Struct) -> Result<Struct, LowerError> {
             .into_iter()
             .map(lower_declared_field)
             .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn lower_enum(enumeration: SyntaxEnum) -> Result<Enum, LowerError> {
+    Ok(Enum {
+        name: enumeration.name,
+        name_span: enumeration.name_span,
+        variants: enumeration
+            .variants
+            .into_iter()
+            .map(|variant| {
+                Ok(EnumVariant {
+                    name: variant.name,
+                    name_span: variant.name_span,
+                    payload: variant
+                        .payload
+                        .map(|payload| {
+                            Ok(EnumPayload {
+                                name: payload.name,
+                                name_span: payload.name_span,
+                                ty: lower_type(payload.ty)?,
+                            })
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?,
     })
 }
 
@@ -403,6 +502,14 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
                 .collect::<Result<Vec<_>, _>>()?,
             span,
         },
+        SyntaxExpression::Match { target, arms, span } => Expression::Match {
+            target: Box::new(lower_expression(*target)?),
+            arms: arms
+                .into_iter()
+                .map(lower_match_arm)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
         SyntaxExpression::Variable { name, span } => Expression::Variable { name, span },
         SyntaxExpression::Call {
             path,
@@ -464,6 +571,19 @@ fn lower_map_entry(entry: SyntaxMapEntry) -> Result<MapEntry, LowerError> {
         key: entry.key,
         key_span: entry.key_span,
         value: lower_expression(entry.value)?,
+    })
+}
+
+fn lower_match_arm(arm: SyntaxMatchArm) -> Result<MatchArm, LowerError> {
+    Ok(MatchArm {
+        pattern: EnumPattern {
+            enum_name: arm.pattern.enum_name,
+            enum_name_span: arm.pattern.enum_name_span,
+            variant: arm.pattern.variant,
+            variant_span: arm.pattern.variant_span,
+            binding: arm.pattern.binding,
+        },
+        value: lower_expression(arm.value)?,
     })
 }
 

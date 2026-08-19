@@ -30,13 +30,18 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
 struct Declarations {
     newtypes: HashMap<String, Type>,
     structs: HashMap<String, Vec<Field>>,
+    enums: HashMap<String, Vec<yan_hir::EnumVariant>>,
 }
 
 fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
     let mut newtypes = HashMap::new();
     let mut structs = HashMap::new();
+    let mut enums = HashMap::new();
     for newtype in &program.newtypes {
-        if newtypes.contains_key(&newtype.name) || structs.contains_key(&newtype.name) {
+        if newtypes.contains_key(&newtype.name)
+            || structs.contains_key(&newtype.name)
+            || enums.contains_key(&newtype.name)
+        {
             return Err(error(
                 newtype.name_span,
                 format!("type `{}` is already defined", newtype.name),
@@ -45,7 +50,10 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
         newtypes.insert(newtype.name.clone(), newtype.underlying.clone());
     }
     for structure in &program.structs {
-        if newtypes.contains_key(&structure.name) || structs.contains_key(&structure.name) {
+        if newtypes.contains_key(&structure.name)
+            || structs.contains_key(&structure.name)
+            || enums.contains_key(&structure.name)
+        {
             return Err(error(
                 structure.name_span,
                 format!("type `{}` is already defined", structure.name),
@@ -62,7 +70,41 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
         }
         structs.insert(structure.name.clone(), structure.fields.clone());
     }
-    let declarations = Declarations { newtypes, structs };
+    for enumeration in &program.enums {
+        if newtypes.contains_key(&enumeration.name)
+            || structs.contains_key(&enumeration.name)
+            || enums.contains_key(&enumeration.name)
+        {
+            return Err(error(
+                enumeration.name_span,
+                format!("type `{}` is already defined", enumeration.name),
+            ));
+        }
+        if enumeration.variants.is_empty() {
+            return Err(error(
+                enumeration.name_span,
+                format!(
+                    "enum `{}` must define at least one variant",
+                    enumeration.name
+                ),
+            ));
+        }
+        let mut names = HashMap::new();
+        for variant in &enumeration.variants {
+            if names.insert(variant.name.as_str(), ()).is_some() {
+                return Err(error(
+                    variant.name_span,
+                    format!("variant `{}` is already defined", variant.name),
+                ));
+            }
+        }
+        enums.insert(enumeration.name.clone(), enumeration.variants.clone());
+    }
+    let declarations = Declarations {
+        newtypes,
+        structs,
+        enums,
+    };
     for underlying in declarations.newtypes.values() {
         check_declared_type(underlying, &declarations, Span::default())?;
     }
@@ -89,6 +131,13 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
             }
         }
     }
+    for variants in declarations.enums.values() {
+        for variant in variants {
+            if let Some(payload) = &variant.payload {
+                check_declared_type(&payload.ty, &declarations, payload.name_span)?;
+            }
+        }
+    }
     Ok(declarations)
 }
 
@@ -103,7 +152,8 @@ fn check_declared_type(
         }
         Type::Named(name)
             if !declarations.newtypes.contains_key(name)
-                && !declarations.structs.contains_key(name) =>
+                && !declarations.structs.contains_key(name)
+                && !declarations.enums.contains_key(name) =>
         {
             Err(error(span, format!("undefined type `{name}`")))
         }
@@ -195,6 +245,11 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             .iter()
             .flat_map(|entry| expression_calls(&entry.value))
             .collect(),
+        Expression::Match { target, arms, .. } => {
+            let mut calls = expression_calls(target);
+            calls.extend(arms.iter().flat_map(|arm| expression_calls(&arm.value)));
+            calls
+        }
         Expression::StructLiteral { fields, .. } => fields
             .iter()
             .flat_map(|field| expression_calls(&field.value))
@@ -501,6 +556,15 @@ fn type_of(
             }
             Ok(Type::Map(Box::new(value_type)))
         }
+        Expression::Match { target, arms, span } => type_of_match(
+            target,
+            arms,
+            *span,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        ),
         Expression::Add { left, right, span } | Expression::Multiply { left, right, span } => {
             let left_type = type_of(left, bindings, signatures, declarations, console_imported)?;
             let right_type = type_of(right, bindings, signatures, declarations, console_imported)?;
@@ -571,6 +635,21 @@ fn type_of(
                 console_imported,
             )?;
             Ok(Type::Unit)
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.len() == 2 && declarations.enums.contains_key(&path[0]) => {
+            type_of_enum_constructor(
+                path,
+                arguments,
+                *span,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )
         }
         Expression::Call {
             path,
@@ -688,6 +767,26 @@ fn type_of(
             field_span,
             ..
         } => {
+            if let Expression::Variable { name, .. } = target.as_ref() {
+                if let Some(variants) = declarations.enums.get(name) {
+                    let variant = variants
+                        .iter()
+                        .find(|variant| variant.name == *field)
+                        .ok_or_else(|| {
+                            error(
+                                *field_span,
+                                format!("enum `{name}` has no variant `{field}`"),
+                            )
+                        })?;
+                    if variant.payload.is_some() {
+                        return Err(error(
+                            *field_span,
+                            format!("enum variant `{name}.{field}` requires one argument"),
+                        ));
+                    }
+                    return Ok(Type::Named(name.clone()));
+                }
+            }
             let Type::Named(name) =
                 type_of(target, bindings, signatures, declarations, console_imported)?
             else {
@@ -709,6 +808,174 @@ fn type_of(
         }
         Expression::Call { span, .. } => Err(error(*span, "M4 does not support this call path")),
     }
+}
+
+/// 验证 enum 变体构造的载荷数量和类型。构造表达式的路径已由 parser 保留，必须在
+/// 声明表建立后才能区分它与普通模块调用，避免语法层依赖类型信息。
+fn type_of_enum_constructor(
+    path: &[String],
+    arguments: &[Expression],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let enum_name = &path[0];
+    let variant_name = &path[1];
+    let variants = declarations
+        .enums
+        .get(enum_name)
+        .ok_or_else(|| error(span, format!("undefined enum `{enum_name}`")))?;
+    let variant = variants
+        .iter()
+        .find(|variant| variant.name == *variant_name)
+        .ok_or_else(|| {
+            error(
+                span,
+                format!("enum `{enum_name}` has no variant `{variant_name}`"),
+            )
+        })?;
+
+    match &variant.payload {
+        None if arguments.is_empty() => Ok(Type::Named(enum_name.clone())),
+        None => Err(error(
+            span,
+            format!("enum variant `{enum_name}.{variant_name}` does not accept arguments"),
+        )),
+        Some(payload) if arguments.len() != 1 => Err(error(
+            span,
+            format!("enum variant `{enum_name}.{variant_name}` requires exactly one argument"),
+        )),
+        Some(payload) => {
+            let actual = type_of(
+                &arguments[0],
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if actual != payload.ty {
+                return Err(error(
+                    arguments[0].span(),
+                    format!(
+                        "enum variant `{enum_name}.{variant_name}` argument does not match its payload type"
+                    ),
+                ));
+            }
+            Ok(Type::Named(enum_name.clone()))
+        }
+    }
+}
+
+/// 验证 match 只覆盖目标 enum 的全部变体，并让有载荷变体仅在对应分支内引入绑定。
+/// 分支使用独立绑定表，避免载荷名称泄漏到 match 外或影响相邻分支。
+fn type_of_match(
+    target: &Expression,
+    arms: &[yan_hir::MatchArm],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let Type::Named(enum_name) =
+        type_of(target, bindings, signatures, declarations, console_imported)?
+    else {
+        return Err(error(target.span(), "match requires an enum value"));
+    };
+    let variants = declarations
+        .enums
+        .get(&enum_name)
+        .ok_or_else(|| error(target.span(), "match requires an enum value"))?;
+    let mut seen = HashMap::new();
+    let mut result_type = None;
+
+    for arm in arms {
+        if arm.pattern.enum_name != enum_name {
+            return Err(error(
+                arm.pattern.enum_name_span,
+                format!("match arm must use enum `{enum_name}`"),
+            ));
+        }
+        let variant = variants
+            .iter()
+            .find(|variant| variant.name == arm.pattern.variant)
+            .ok_or_else(|| {
+                error(
+                    arm.pattern.variant_span,
+                    format!(
+                        "enum `{enum_name}` has no variant `{}`",
+                        arm.pattern.variant
+                    ),
+                )
+            })?;
+        if seen.insert(variant.name.as_str(), ()).is_some() {
+            return Err(error(
+                arm.pattern.variant_span,
+                format!("match arm for `{enum_name}.{}` is duplicated", variant.name),
+            ));
+        }
+
+        let mut arm_bindings = bindings.clone();
+        match (&variant.payload, &arm.pattern.binding) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    format!("enum variant `{enum_name}.{}` has no payload", variant.name),
+                ));
+            }
+            (Some(_), None) => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    format!(
+                        "enum variant `{enum_name}.{}` requires a payload binding",
+                        variant.name
+                    ),
+                ));
+            }
+            (Some(payload), Some((binding, _))) => {
+                arm_bindings.insert(
+                    binding.clone(),
+                    Binding {
+                        ty: payload.ty.clone(),
+                        mutable: false,
+                    },
+                );
+            }
+        }
+        let arm_type = type_of(
+            &arm.value,
+            &arm_bindings,
+            signatures,
+            declarations,
+            console_imported,
+        )?;
+        if let Some(expected) = &result_type {
+            if &arm_type != expected {
+                return Err(error(
+                    arm.value.span(),
+                    "match arm result types must be the same",
+                ));
+            }
+        } else {
+            result_type = Some(arm_type);
+        }
+    }
+
+    for variant in variants {
+        if !seen.contains_key(variant.name.as_str()) {
+            return Err(error(
+                span,
+                format!(
+                    "match is missing enum variant `{enum_name}.{}`",
+                    variant.name
+                ),
+            ));
+        }
+    }
+    result_type.ok_or_else(|| error(span, "match must contain at least one arm"))
 }
 
 fn statement_span(statement: &Statement) -> Span {
@@ -851,5 +1118,23 @@ mod tests {
 
         let error = check_source(source).expect_err("不同值类型的 map 必须失败");
         assert_eq!(error.message, "map values must have the same type");
+    }
+
+    #[test]
+    fn checks_exhaustive_enum_match_with_payload_binding() {
+        let source = "enum State { Ready Failed(reason: string) } fn label(state: State) -> string { match state { State.Ready => \"ready\" State.Failed(reason) => \"failed: {reason}\" } } fn main() -> unit { }";
+
+        check_source(source).expect("穷尽 enum match 应通过类型检查");
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_enum_match() {
+        let source = "enum State { Ready Failed(reason: string) } fn label(state: State) -> string { match state { State.Ready => \"ready\" } } fn main() -> unit { }";
+
+        let error = check_source(source).expect_err("缺少变体的 match 必须失败");
+        assert_eq!(
+            error.message,
+            "match is missing enum variant `State.Failed`"
+        );
     }
 }

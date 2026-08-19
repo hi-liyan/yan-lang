@@ -1,6 +1,6 @@
 # M5：核心数据类型与注释
 
-状态：进行中
+状态：部分完成（示例验收已通过；文档注释 HIR 附着尚未实现）
 范围：使 `examples/language-design/01-data-types/07_bytes.yan`、`08_map.yan` 与 `09_float.yan` 可由 `yanc run` 检查并执行。
 
 ## 包含

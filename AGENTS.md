@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M5 核心数据类型与注释。只允许实现 `docs/milestones/m5-core-data-types.md` 中的 `bytes`、`map<string, T>`、`float`、普通注释与文档注释，并保持 M2、M3、M4 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 map、map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、解构、泛型 struct、enum、match、option、result、控制流、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M6 枚举与穷尽匹配。只允许实现 `docs/milestones/m6-enums-and-match.md` 中的封闭 enum、零或一个具名载荷的变体、enum 构造与穷尽 `match` 表达式，并保持 M2、M3、M4、M5 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 map、map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、解构、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、option、result、if、for、while、return、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

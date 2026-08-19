@@ -44,6 +44,11 @@ enum Value {
     String(String),
     List(Vec<Value>),
     Map(Vec<(String, Value)>),
+    Enum {
+        enum_name: String,
+        variant: String,
+        payload: Option<Box<Value>>,
+    },
     Newtype(String, Box<Value>),
     Struct {
         name: String,
@@ -76,6 +81,14 @@ impl Value {
                     .join(", ");
                 format!("{{{rendered}}}")
             }
+            Self::Enum {
+                enum_name,
+                variant,
+                payload,
+            } => match payload {
+                Some(payload) => format!("{enum_name}.{variant}({})", payload.display()),
+                None => format!("{enum_name}.{variant}"),
+            },
             Self::Newtype(_, value) => value.display(),
             Self::Struct { name, .. } => name.clone(),
             Self::Unit => "unit".to_owned(),
@@ -174,6 +187,40 @@ fn evaluate(
             })
             .collect::<Result<Vec<_>, EvalError>>()
             .map(Value::Map),
+        Expression::Match { target, arms, span } => {
+            let value = evaluate(target, program, bindings, output)?;
+            let Value::Enum {
+                enum_name,
+                variant,
+                payload,
+            } = value
+            else {
+                return Err(EvalError::new(
+                    *span,
+                    "type-checked match must use an enum value",
+                ));
+            };
+            let arm = arms
+                .iter()
+                .find(|arm| arm.pattern.enum_name == enum_name && arm.pattern.variant == variant)
+                .ok_or_else(|| {
+                    EvalError::new(
+                        *span,
+                        format!("type-checked match is missing `{enum_name}.{variant}`"),
+                    )
+                })?;
+            let mut arm_bindings = bindings.clone();
+            if let Some((binding, binding_span)) = &arm.pattern.binding {
+                let payload = payload.ok_or_else(|| {
+                    EvalError::new(
+                        *binding_span,
+                        "type-checked match binding requires a payload",
+                    )
+                })?;
+                arm_bindings.insert(binding.clone(), *payload);
+            }
+            evaluate(&arm.value, program, &arm_bindings, output)
+        }
         Expression::Variable { name, span } => bindings
             .get(name)
             .cloned()
@@ -264,6 +311,21 @@ fn evaluate(
             field_span,
             ..
         } => {
+            if let Expression::Variable { name, .. } = target.as_ref() {
+                if let Some(variant) = find_enum_variant(program, name, field) {
+                    if variant.payload.is_some() {
+                        return Err(EvalError::new(
+                            *field_span,
+                            format!("enum variant `{name}.{field}` requires one argument"),
+                        ));
+                    }
+                    return Ok(Value::Enum {
+                        enum_name: name.clone(),
+                        variant: field.clone(),
+                        payload: None,
+                    });
+                }
+            }
             let value = evaluate(target, program, bindings, output)?;
             match value {
                 Value::Struct { fields, .. } => fields.get(field).cloned().ok_or_else(|| {
@@ -314,6 +376,47 @@ fn evaluate(
             let rendered = evaluate(argument, program, bindings, output)?.display();
             output.push(rendered);
             Ok(Value::Unit)
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.len() == 2
+            && program
+                .enums
+                .iter()
+                .any(|enumeration| enumeration.name == path[0]) =>
+        {
+            let enum_name = &path[0];
+            let variant_name = &path[1];
+            let variant = find_enum_variant(program, enum_name, variant_name).ok_or_else(|| {
+                EvalError::new(
+                    *span,
+                    format!("undefined enum variant `{enum_name}.{variant_name}`"),
+                )
+            })?;
+            match (&variant.payload, arguments.as_slice()) {
+                (None, []) => Ok(Value::Enum {
+                    enum_name: enum_name.clone(),
+                    variant: variant_name.clone(),
+                    payload: None,
+                }),
+                (Some(_), [argument]) => Ok(Value::Enum {
+                    enum_name: enum_name.clone(),
+                    variant: variant_name.clone(),
+                    payload: Some(Box::new(evaluate(argument, program, bindings, output)?)),
+                }),
+                (None, _) => Err(EvalError::new(
+                    *span,
+                    format!("enum variant `{enum_name}.{variant_name}` does not accept arguments"),
+                )),
+                (Some(_), _) => Err(EvalError::new(
+                    *span,
+                    format!(
+                        "enum variant `{enum_name}.{variant_name}` requires exactly one argument"
+                    ),
+                )),
+            }
         }
         Expression::Call {
             path,
@@ -386,6 +489,23 @@ fn find_function<'program>(
         .ok_or_else(|| EvalError::new(span, format!("undefined function `{name}`")))
 }
 
+fn find_enum_variant<'program>(
+    program: &'program Program,
+    enum_name: &str,
+    variant_name: &str,
+) -> Option<&'program yan_hir::EnumVariant> {
+    program
+        .enums
+        .iter()
+        .find(|enumeration| enumeration.name == enum_name)
+        .and_then(|enumeration| {
+            enumeration
+                .variants
+                .iter()
+                .find(|variant| variant.name == variant_name)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use yan_hir::lower;
@@ -419,6 +539,20 @@ mod tests {
         assert_eq!(
             execute(&program).expect("测试源码应能执行"),
             vec!["{\"http\": 80, \"https\": 443}"]
+        );
+    }
+
+    #[test]
+    fn executes_enum_match_with_payload_binding() {
+        let source = "import yan.platform.console enum State { Ready Failed(reason: string) } fn label(state: State) -> string { match state { State.Ready => \"ready\" State.Failed(reason) => \"failed: {reason}\" } } fn main() -> unit { console.println(label(State.Failed(\"network\"))) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        assert_eq!(
+            execute(&program).expect("测试源码应能执行"),
+            vec!["failed: network"]
         );
     }
 }

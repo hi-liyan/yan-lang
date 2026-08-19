@@ -33,6 +33,7 @@ pub enum TokenKind {
     Less,
     Greater,
     Arrow,
+    FatArrow,
 }
 
 /// 一个带原始源文件位置的 token。
@@ -89,6 +90,8 @@ pub struct SyntaxProgram {
     pub newtypes: Vec<Newtype>,
     /// 源文件中的结构体声明。
     pub structs: Vec<Struct>,
+    /// 源文件中的枚举声明。
+    pub enums: Vec<Enum>,
     /// 源文件中的函数定义。
     pub functions: Vec<Function>,
 }
@@ -115,6 +118,28 @@ pub struct Struct {
     pub fields: Vec<Field>,
 }
 
+/// 封闭枚举声明。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Enum {
+    /// 枚举名称。
+    pub name: String,
+    /// 枚举名称在源文件中的位置。
+    pub name_span: Span,
+    /// 按声明顺序排列的变体。
+    pub variants: Vec<EnumVariant>,
+}
+
+/// 枚举的一个零载荷或单载荷变体。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumVariant {
+    /// 变体名称。
+    pub name: String,
+    /// 变体名称在源文件中的位置。
+    pub name_span: Span,
+    /// 可选的单个具名载荷。
+    pub payload: Option<Parameter>,
+}
+
 /// 结构体声明或字面量中的一个具名字段。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Field {
@@ -138,6 +163,30 @@ pub struct MapEntry {
     /// 键字符串字面量在源文件中的位置。
     pub key_span: Span,
     /// 与键关联的值表达式。
+    pub value: Expression,
+}
+
+/// match 分支中对 enum 变体的模式。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumPattern {
+    /// 枚举名称。
+    pub enum_name: String,
+    /// 枚举名称在源文件中的位置。
+    pub enum_name_span: Span,
+    /// 变体名称。
+    pub variant: String,
+    /// 变体名称在源文件中的位置。
+    pub variant_span: Span,
+    /// 有载荷变体在分支内使用的可选局部绑定。
+    pub binding: Option<(String, Span)>,
+}
+
+/// match 表达式的一个分支。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatchArm {
+    /// 分支匹配的 enum 变体模式。
+    pub pattern: EnumPattern,
+    /// 该分支被选中时求值的表达式。
     pub value: Expression,
 }
 
@@ -230,6 +279,12 @@ pub enum Expression {
     List { values: Vec<Expression>, span: Span },
     /// 键为字符串的 map 字面量。
     Map { entries: Vec<MapEntry>, span: Span },
+    /// 对 enum 值进行穷尽匹配的表达式。
+    Match {
+        target: Box<Expression>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
     /// 局部变量引用。
     Variable { name: String, span: Span },
     /// 以模块式名称调用的函数，例如 `console.println(value)`。
@@ -282,6 +337,7 @@ impl Expression {
             | Self::String { span, .. }
             | Self::List { span, .. }
             | Self::Map { span, .. }
+            | Self::Match { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -359,6 +415,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 index += 2;
                 tokens.push(token(TokenKind::Arrow, start, index));
             }
+            b'=' if bytes.get(index + 1) == Some(&b'>') => {
+                index += 2;
+                tokens.push(token(TokenKind::FatArrow, start, index));
+            }
             b'(' => push_symbol(&mut tokens, TokenKind::LeftParen, &mut index),
             b')' => push_symbol(&mut tokens, TokenKind::RightParen, &mut index),
             b'{' => push_symbol(&mut tokens, TokenKind::LeftBrace, &mut index),
@@ -422,11 +482,13 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
 
         let mut newtypes = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
             match self.peek_text() {
                 Some("type") => newtypes.push(self.parse_newtype()?),
                 Some("struct") => structs.push(self.parse_struct()?),
+                Some("enum") => enums.push(self.parse_enum()?),
                 Some("fn") => functions.push(self.parse_function()?),
                 _ => return Err(self.error_here("a declaration")),
             }
@@ -437,6 +499,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             imports,
             newtypes,
             structs,
+            enums,
             functions,
         })
     }
@@ -466,6 +529,41 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             name,
             name_span,
             fields,
+        })
+    }
+
+    fn parse_enum(&mut self) -> Result<Enum, ParseError> {
+        self.consume_text("enum", "an enum declaration")?;
+        let (name, name_span) = self.consume_identifier("enum name")?;
+        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut variants = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            let (variant_name, variant_span) = self.consume_identifier("enum variant name")?;
+            let payload = if self.consume_if(TokenKind::LeftParen).is_some() {
+                let (payload_name, payload_span) = self.consume_identifier("enum payload name")?;
+                self.consume_kind(TokenKind::Colon, "`:`")?;
+                let ty = self.parse_type()?;
+                self.consume_kind(TokenKind::RightParen, "`)`")?;
+                Some(Parameter {
+                    name: payload_name,
+                    name_span: payload_span,
+                    ty,
+                })
+            } else {
+                None
+            };
+            variants.push(EnumVariant {
+                name: variant_name,
+                name_span: variant_span,
+                payload,
+            });
+            self.consume_if(TokenKind::Comma);
+        }
+        self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(Enum {
+            name,
+            name_span,
+            variants,
         })
     }
 
@@ -689,6 +787,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             }
             TokenKind::LeftBracket => self.parse_list(),
             TokenKind::LeftBrace => self.parse_map(),
+            TokenKind::Identifier if self.peek_text() == Some("match") => self.parse_match(),
             TokenKind::Identifier => self.parse_identifier_expression(),
             _ => Err(ParseError {
                 span: token.span,
@@ -733,6 +832,52 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         Ok(Expression::Map {
             entries,
             span: Span::new(opening.span.start, closing.span.end),
+        })
+    }
+
+    fn parse_match(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.consume_text("match", "`match`")?;
+        // M6 的 match 目标限定为局部 enum 值；直接读取标识符可避免紧随的 `{`
+        // 被既有 parser 当成结构体字面量，从而把分支体错误地解析为字段。
+        let (target_name, target_span) = self.consume_identifier("match target variable")?;
+        let target = Expression::Variable {
+            name: target_name,
+            span: target_span,
+        };
+        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut arms = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            let pattern = self.parse_enum_pattern()?;
+            self.consume_kind(TokenKind::FatArrow, "`=>`")?;
+            let value = self.parse_expression()?;
+            arms.push(MatchArm { pattern, value });
+            self.consume_if(TokenKind::Comma);
+        }
+        let closing = self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(Expression::Match {
+            target: Box::new(target),
+            arms,
+            span: Span::new(opening.span.start, closing.span.end),
+        })
+    }
+
+    fn parse_enum_pattern(&mut self) -> Result<EnumPattern, ParseError> {
+        let (enum_name, enum_name_span) = self.consume_identifier("enum name")?;
+        self.consume_kind(TokenKind::Dot, "`.`")?;
+        let (variant, variant_span) = self.consume_identifier("enum variant name")?;
+        let binding = if self.consume_if(TokenKind::LeftParen).is_some() {
+            let (name, span) = self.consume_identifier("enum payload binding")?;
+            self.consume_kind(TokenKind::RightParen, "`)`")?;
+            Some((name, span))
+        } else {
+            None
+        };
+        Ok(EnumPattern {
+            enum_name,
+            enum_name_span,
+            variant,
+            variant_span,
+            binding,
         })
     }
 
@@ -970,6 +1115,19 @@ mod tests {
                 value: Expression::Map { entries, .. },
                 ..
             } if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_enum_declaration_and_match_expression() {
+        let source = "enum State { Ready Failed(reason: string) } fn label(state: State) -> string { match state { State.Ready => \"ready\" State.Failed(reason) => \"failed: {reason}\" } } fn main() -> unit { }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
+
+        assert_eq!(program.enums[0].variants.len(), 2);
+        assert!(matches!(
+            &program.functions[0].statements[0],
+            Statement::Expression(Expression::Match { arms, .. }) if arms.len() == 2
         ));
     }
 }
