@@ -150,6 +150,12 @@ fn check_declared_type(
         Type::List(element) | Type::Map(element) | Type::Option(element) => {
             check_declared_type(element, declarations, span)
         }
+        Type::Tuple(elements) => {
+            for element in elements {
+                check_declared_type(element, declarations, span)?;
+            }
+            Ok(())
+        }
         Type::Result(ok, error) => {
             check_declared_type(ok, declarations, span)?;
             check_declared_type(error, declarations, span)
@@ -223,6 +229,7 @@ fn visit_call_graph(
 
 fn statement_calls(statement: &Statement) -> Vec<(&str, Span)> {
     match statement {
+        Statement::Destructure { value, .. } => expression_calls(value),
         Statement::Let { value, .. } | Statement::Assign { value, .. } => expression_calls(value),
         Statement::Expression(expression) => expression_calls(expression),
     }
@@ -249,6 +256,7 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             .iter()
             .flat_map(|entry| expression_calls(&entry.value))
             .collect(),
+        Expression::Tuple { values, .. } => values.iter().flat_map(expression_calls).collect(),
         Expression::Match { target, arms, .. } => {
             let mut calls = expression_calls(target);
             calls.extend(arms.iter().flat_map(|arm| expression_calls(&arm.value)));
@@ -415,6 +423,38 @@ fn check_statement(
     console_imported: bool,
 ) -> Result<Option<Type>, TypeError> {
     match statement {
+        Statement::Destructure { names, value } => {
+            if names.len() < 2 || names.len() > 3 {
+                return Err(error(
+                    value.span(),
+                    "tuple destructuring requires two or three names",
+                ));
+            }
+            let Type::Tuple(elements) =
+                type_of(value, bindings, signatures, declarations, console_imported)?
+            else {
+                return Err(error(
+                    value.span(),
+                    "tuple destructuring requires a tuple value",
+                ));
+            };
+            if elements.len() != names.len() {
+                return Err(error(
+                    value.span(),
+                    "tuple destructuring length does not match value type",
+                ));
+            }
+            for ((name, span), ty) in names.iter().zip(elements) {
+                if bindings.contains_key(name) {
+                    return Err(error(
+                        *span,
+                        format!("variable `{name}` is already defined"),
+                    ));
+                }
+                bindings.insert(name.clone(), Binding { ty, mutable: false });
+            }
+            Ok(None)
+        }
         Statement::Let {
             mutable,
             name,
@@ -562,6 +602,19 @@ fn type_of(
                 }
             }
             Ok(Type::Map(Box::new(value_type)))
+        }
+        Expression::Tuple { values, span } => {
+            if values.len() < 2 || values.len() > 3 {
+                return Err(error(*span, "tuple literals require two or three values"));
+            }
+            Ok(Type::Tuple(
+                values
+                    .iter()
+                    .map(|value| {
+                        type_of(value, bindings, signatures, declarations, console_imported)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
         }
         Expression::Match { target, arms, span } => type_of_match(
             target,
@@ -1308,6 +1361,9 @@ fn types_compatible(actual: &Type, expected: &Type) -> bool {
 
 fn statement_span(statement: &Statement) -> Span {
     match statement {
+        Statement::Destructure { names, value } => {
+            names.first().map(|(_, span)| *span).unwrap_or(value.span())
+        }
         Statement::Let { name_span, .. } | Statement::Assign { name_span, .. } => *name_span,
         Statement::Expression(expression) => expression.span(),
     }
@@ -1487,5 +1543,12 @@ mod tests {
             "fn accept(value: Option<string>) -> unit { } fn main() -> unit { accept(None) }";
 
         check_source(source).expect("None 应从 Option 参数类型推断为空值");
+    }
+
+    #[test]
+    fn checks_three_element_tuple_destructuring() {
+        let source = "fn values() -> (int, string, bool) { (1, \"yan\", true) } fn main() -> unit { let (count, name, enabled) = values() }";
+
+        check_source(source).expect("三元元组应能返回并解构");
     }
 }

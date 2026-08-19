@@ -10,7 +10,7 @@
 | 枚举与 match | 已实现 | `04-enums-and-match/01_enums_and_match.yan` |
 | Option | 已实现 | `05-option/01_option.yan` |
 | Result | 已实现 | `06-result/01_result.yan` |
-| 集合与元组 | 元组为设计提案 | `07-collections/02_tuples_and_destructuring.yan` |
+| 集合与元组 | 元组已实现 | `07-collections/02_tuples_and_destructuring.yan` |
 | 条件 | 设计提案 | `08-conditions/01_if.yan` |
 | 循环 | 设计提案 | `09-loops/01_for.yan` |
 | 模块 | 设计提案 | `10-modules/01_modules.yan`、`02_module_declaration/` |

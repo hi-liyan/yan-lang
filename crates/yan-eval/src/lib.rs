@@ -53,6 +53,7 @@ enum Value {
     String(String),
     List(Vec<Value>),
     Map(Vec<(String, Value)>),
+    Tuple(Vec<Value>),
     Optional(Option<Box<Value>>),
     Outcome(Result<Box<Value>, Box<Value>>),
     Return(Box<Value>),
@@ -93,6 +94,14 @@ impl Value {
                     .join(", ");
                 format!("{{{rendered}}}")
             }
+            Self::Tuple(values) => format!(
+                "({})",
+                values
+                    .iter()
+                    .map(Value::display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Optional(Some(value)) => format!("Some({})", value.display()),
             Self::Optional(None) => "None".to_owned(),
             Self::Outcome(Ok(value)) => format!("Ok({})", value.display()),
@@ -155,6 +164,17 @@ fn execute_statement(
     output: &mut Vec<String>,
 ) -> Result<Option<Value>, EvalError> {
     match statement {
+        Statement::Destructure { names, value } => {
+            let Value::Tuple(values) = evaluate(value, program, bindings, output)? else {
+                return Err(EvalError::new(
+                    value.span(),
+                    "type-checked destructuring requires a tuple value",
+                ));
+            };
+            for ((name, _), value) in names.iter().zip(values) {
+                bindings.insert(name.clone(), value);
+            }
+        }
         Statement::Let { name, value, .. } => {
             let value = evaluate(value, program, bindings, output)?;
             if let Value::Return(value) = value {
@@ -214,6 +234,11 @@ fn evaluate(
             })
             .collect::<Result<Vec<_>, EvalError>>()
             .map(Value::Map),
+        Expression::Tuple { values, .. } => values
+            .iter()
+            .map(|value| evaluate(value, program, bindings, output))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Tuple),
         Expression::Match { target, arms, span } => {
             evaluate_match(target, arms, *span, program, bindings, output)
         }

@@ -140,6 +140,7 @@ pub enum Type {
     /// 内建可选值，包含一个 T 值或不包含任何值。
     Option(Box<Type>),
     Result(Box<Type>, Box<Type>),
+    Tuple(Vec<Type>),
     Never,
     /// 由源文件声明的名义类型，包括新类型和结构体。
     Named(String),
@@ -148,6 +149,10 @@ pub enum Type {
 /// HIR 语句。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Statement {
+    Destructure {
+        names: Vec<(String, Span)>,
+        value: Expression,
+    },
     /// 声明局部变量。
     Let {
         mutable: bool,
@@ -197,6 +202,10 @@ pub enum Expression {
     /// 键为 string 的 map 字面量。
     Map {
         entries: Vec<MapEntry>,
+        span: Span,
+    },
+    Tuple {
+        values: Vec<Expression>,
         span: Span,
     },
     /// 对 enum 值进行穷尽匹配的表达式。
@@ -268,6 +277,7 @@ impl Expression {
             | Self::String { span, .. }
             | Self::List { span, .. }
             | Self::Map { span, .. }
+            | Self::Tuple { span, .. }
             | Self::Match { span, .. }
             | Self::Return { span, .. }
             | Self::Try { span, .. }
@@ -468,6 +478,14 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
         span: ty.span,
         message: format!("M3 does not support type `{}`", ty.name),
     };
+    if ty.name == "()" {
+        return Ok(Type::Tuple(
+            ty.tuple_elements
+                .into_iter()
+                .map(lower_type)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
     match (ty.name.as_str(), ty.arguments.as_slice()) {
         ("int", []) => Ok(Type::Int),
         ("float", []) => Ok(Type::Float),
@@ -500,6 +518,10 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
 
 fn lower_statement(statement: SyntaxStatement) -> Result<Statement, LowerError> {
     match statement {
+        SyntaxStatement::Destructure { names, value } => Ok(Statement::Destructure {
+            names,
+            value: lower_expression(value)?,
+        }),
         SyntaxStatement::Let {
             mutable,
             name,
@@ -548,6 +570,13 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             entries: entries
                 .into_iter()
                 .map(lower_map_entry)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::Tuple { values, span } => Expression::Tuple {
+            values: values
+                .into_iter()
+                .map(lower_expression)
                 .collect::<Result<Vec<_>, _>>()?,
             span,
         },

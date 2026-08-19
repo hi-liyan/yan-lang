@@ -242,11 +242,18 @@ pub struct TypeSyntax {
     pub arguments: Vec<TypeSyntax>,
     /// 整个类型写法的位置。
     pub span: Span,
+    /// 二元或三元元组的元素类型；非元组类型为空。
+    pub tuple_elements: Vec<TypeSyntax>,
 }
 
 /// M3 函数体可出现的语句。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Statement {
+    /// 将二元或三元元组按顺序解构为局部绑定。
+    Destructure {
+        names: Vec<(String, Span)>,
+        value: Expression,
+    },
     /// 声明局部绑定。
     Let {
         mutable: bool,
@@ -296,6 +303,11 @@ pub enum Expression {
     /// 键为字符串的 map 字面量。
     Map {
         entries: Vec<MapEntry>,
+        span: Span,
+    },
+    /// 二元或三元元组字面量。
+    Tuple {
+        values: Vec<Expression>,
         span: Span,
     },
     /// 对 enum 值进行穷尽匹配的表达式。
@@ -367,6 +379,7 @@ impl Expression {
             | Self::String { span, .. }
             | Self::List { span, .. }
             | Self::Map { span, .. }
+            | Self::Tuple { span, .. }
             | Self::Match { span, .. }
             | Self::Return { span, .. }
             | Self::Try { span, .. }
@@ -679,6 +692,17 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     }
 
     fn parse_type(&mut self) -> Result<TypeSyntax, ParseError> {
+        if self.at_kind(TokenKind::LeftParen) {
+            let opening = self.consume_kind(TokenKind::LeftParen, "`(`")?;
+            let elements = self.parse_tuple_items(|parser| parser.parse_type())?;
+            let closing = self.consume_kind(TokenKind::RightParen, "`)`")?;
+            return Ok(TypeSyntax {
+                name: "()".to_owned(),
+                arguments: Vec::new(),
+                span: Span::new(opening.span.start, closing.span.end),
+                tuple_elements: elements,
+            });
+        }
         let (name, start) = self.consume_identifier("type name")?;
         let mut arguments = Vec::new();
         let end = if self.consume_if(TokenKind::Less).is_some() {
@@ -699,12 +723,24 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             name,
             arguments,
             span: Span::new(start.start, end),
+            tuple_elements: Vec::new(),
         })
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         if self.peek_text() == Some("let") {
             self.advance();
+            if self.at_kind(TokenKind::LeftParen) {
+                self.consume_kind(TokenKind::LeftParen, "`(`")?;
+                let names =
+                    self.parse_tuple_items(|parser| parser.consume_identifier("destructure name"))?;
+                self.consume_kind(TokenKind::RightParen, "`)`")?;
+                self.consume_kind(TokenKind::Equals, "`=`")?;
+                return Ok(Statement::Destructure {
+                    names,
+                    value: self.parse_expression()?,
+                });
+            }
             let mutable = if self.peek_text() == Some("mut") {
                 self.advance();
                 true
@@ -830,6 +866,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 })
             }
             TokenKind::LeftBracket => self.parse_list(),
+            TokenKind::LeftParen => self.parse_tuple(),
             TokenKind::LeftBrace => self.parse_map(),
             TokenKind::Identifier if self.peek_text() == Some("match") => self.parse_match(),
             TokenKind::Identifier if self.peek_text() == Some("return") => self.parse_return(),
@@ -839,6 +876,32 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 message: "expected an expression".to_owned(),
             }),
         }
+    }
+
+    fn parse_tuple(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.consume_kind(TokenKind::LeftParen, "`(`")?;
+        let values = self.parse_tuple_items(|parser| parser.parse_expression())?;
+        let closing = self.consume_kind(TokenKind::RightParen, "`)`")?;
+        Ok(Expression::Tuple {
+            values,
+            span: Span::new(opening.span.start, closing.span.end),
+        })
+    }
+
+    fn parse_tuple_items<T>(
+        &mut self,
+        mut parse_item: impl FnMut(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<Vec<T>, ParseError> {
+        let mut items = vec![parse_item(self)?];
+        self.consume_kind(TokenKind::Comma, "`,`")?;
+        items.push(parse_item(self)?);
+        if self.consume_if(TokenKind::Comma).is_some() {
+            items.push(parse_item(self)?);
+        }
+        if self.at_kind(TokenKind::Comma) {
+            return Err(self.error_here("a two- or three-element tuple"));
+        }
+        Ok(items)
     }
 
     fn parse_return(&mut self) -> Result<Expression, ParseError> {
