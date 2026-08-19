@@ -262,6 +262,26 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             calls.extend(arms.iter().flat_map(|arm| expression_calls(&arm.value)));
             calls
         }
+        Expression::If {
+            condition,
+            then_statements,
+            else_statements,
+            ..
+        } => {
+            let mut calls = expression_calls(condition);
+            calls.extend(then_statements.iter().flat_map(statement_calls));
+            calls.extend(else_statements.iter().flat_map(statement_calls));
+            calls
+        }
+        Expression::For {
+            iterable,
+            statements,
+            ..
+        } => {
+            let mut calls = expression_calls(iterable);
+            calls.extend(statements.iter().flat_map(statement_calls));
+            calls
+        }
         Expression::Return { value, .. } | Expression::Try { value, .. } => expression_calls(value),
         Expression::StructLiteral { fields, .. } => fields
             .iter()
@@ -520,6 +540,38 @@ fn check_statement(
     }
 }
 
+/// 在独立的局部作用域中检查语句块，并返回其最后一个表达式的类型。
+fn type_of_block(
+    statements: &[Statement],
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let mut local_bindings = bindings.clone();
+    let mut tail_type = Type::Unit;
+    let count = statements.len();
+    for (index, statement) in statements.iter().enumerate() {
+        if let Some(ty) = check_statement(
+            statement,
+            &mut local_bindings,
+            signatures,
+            declarations,
+            console_imported,
+        )? {
+            if index + 1 == count {
+                tail_type = ty;
+            } else if ty != Type::Unit {
+                return Err(error(
+                    statement_span(statement),
+                    "only the final expression in a block may produce a return value",
+                ));
+            }
+        }
+    }
+    Ok(tail_type)
+}
+
 fn type_of(
     expression: &Expression,
     bindings: &HashMap<String, Binding>,
@@ -625,6 +677,91 @@ fn type_of(
             declarations,
             console_imported,
         ),
+        Expression::If {
+            condition,
+            then_statements,
+            else_statements,
+            span,
+        } => {
+            if type_of(
+                condition,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )? != Type::Bool
+            {
+                return Err(error(condition.span(), "if condition must have type bool"));
+            }
+            let then_type = type_of_block(
+                then_statements,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            let else_type = type_of_block(
+                else_statements,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if !types_compatible(&then_type, &else_type) {
+                return Err(error(*span, "if branch result types must be the same"));
+            }
+            Ok(if then_type == Type::Never {
+                else_type
+            } else {
+                then_type
+            })
+        }
+        Expression::For {
+            name,
+            name_span,
+            iterable,
+            statements,
+            span,
+        } => {
+            if bindings.contains_key(name) {
+                return Err(error(
+                    *name_span,
+                    format!("variable `{name}` is already defined"),
+                ));
+            }
+            let Type::List(element) = type_of(
+                iterable,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?
+            else {
+                return Err(error(iterable.span(), "for requires a List value"));
+            };
+            let mut loop_bindings = bindings.clone();
+            loop_bindings.insert(
+                name.clone(),
+                Binding {
+                    ty: *element,
+                    mutable: false,
+                },
+            );
+            let body_type = type_of_block(
+                statements,
+                &loop_bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if !types_compatible(&body_type, &Type::Unit) {
+                return Err(error(
+                    statements.last().map(statement_span).unwrap_or(*span),
+                    "for body must not produce a return value",
+                ));
+            }
+            Ok(Type::Unit)
+        }
         Expression::Return { .. } => Ok(Type::Never),
         Expression::Try { value, span } => {
             let Type::Result(ok, _) =
@@ -1444,6 +1581,29 @@ mod tests {
 
         let error = check_source(source).expect_err("函数尾表达式类型不匹配必须失败");
         assert!(error.message.contains("final expression"));
+    }
+
+    #[test]
+    fn checks_bool_if_expression_and_unit_for_loop() {
+        let source = "import yan.platform.console fn label(ready: bool) -> string { if ready { \"ready\" } else { \"pending\" } } fn main() -> unit { let targets = [\"cli\", \"web\"] for target in targets { console.println(label(target == \"cli\")) } }";
+
+        check_source(source).expect("if 和 for 应通过类型检查");
+    }
+
+    #[test]
+    fn rejects_non_bool_if_condition() {
+        let error = check_source("fn main() -> unit { if 1 { } else { } }")
+            .expect_err("非 bool 条件必须失败");
+
+        assert_eq!(error.message, "if condition must have type bool");
+    }
+
+    #[test]
+    fn rejects_value_producing_for_body() {
+        let error = check_source("fn main() -> unit { for value in [1, 2] { value } }")
+            .expect_err("for 循环体不能产生值");
+
+        assert_eq!(error.message, "for body must not produce a return value");
     }
 
     #[test]

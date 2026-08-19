@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M10 二元元组与解构。只允许实现 `docs/milestones/m10-tuples-and-destructuring.md` 中的二元 tuple 类型、字面量和顶层 let 解构，并保持 M2 至 M9 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、嵌套/赋值解构、位置访问、忽略或剩余模式、单元素或高阶元组、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、Option 方法、嵌套 Option、Result 方法、任意成员调用、if、for、while、除 Result 传播外的 `?`、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M11 条件表达式与列表循环。只允许实现 `docs/milestones/m11-if-and-for.md` 中带 `else` 的 bool `if` 表达式、`for name in List<T>` 和固定返回 `unit` 的循环语义，并保持 M2 至 M10 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、嵌套/赋值解构、位置访问、忽略或剩余模式、单元素或高阶元组、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、Option 方法、嵌套 Option、Result 方法、任意成员调用、省略 `else` 的 if、while、break、continue、范围/map 循环、iterator 方法、除 Result 传播外的 `?`、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

@@ -242,6 +242,43 @@ fn evaluate(
         Expression::Match { target, arms, span } => {
             evaluate_match(target, arms, *span, program, bindings, output)
         }
+        Expression::If {
+            condition,
+            then_statements,
+            else_statements,
+            span,
+        } => match evaluate(condition, program, bindings, output)? {
+            Value::Boolean(true) => evaluate_block(then_statements, program, bindings, output),
+            Value::Boolean(false) => evaluate_block(else_statements, program, bindings, output),
+            _ => Err(EvalError::new(
+                *span,
+                "type-checked if condition must use bool",
+            )),
+        },
+        Expression::For {
+            name,
+            iterable,
+            statements,
+            span,
+            ..
+        } => {
+            let Value::List(values) = evaluate(iterable, program, bindings, output)? else {
+                return Err(EvalError::new(
+                    *span,
+                    "type-checked for must iterate over a List value",
+                ));
+            };
+            for value in values {
+                let mut loop_bindings = bindings.clone();
+                loop_bindings.insert(name.clone(), value);
+                if let Value::Return(value) =
+                    evaluate_block(statements, program, &loop_bindings, output)?
+                {
+                    return Ok(Value::Return(value));
+                }
+            }
+            Ok(Value::Unit)
+        }
         Expression::Return { value, .. } => Ok(Value::Return(Box::new(evaluate(
             value, program, bindings, output,
         )?))),
@@ -549,6 +586,28 @@ fn evaluate(
     }
 }
 
+/// 在独立局部作用域中执行嵌套语句块，并保留 return 控制流供外层函数处理。
+fn evaluate_block(
+    statements: &[Statement],
+    program: &Program,
+    bindings: &HashMap<String, Value>,
+    output: &mut Vec<String>,
+) -> Result<Value, EvalError> {
+    let mut local_bindings = bindings.clone();
+    let statement_count = statements.len();
+    for (index, statement) in statements.iter().enumerate() {
+        if index + 1 == statement_count {
+            if let Statement::Expression(expression) = statement {
+                return evaluate(expression, program, &local_bindings, output);
+            }
+        }
+        if let Some(value) = execute_statement(statement, program, &mut local_bindings, output)? {
+            return Ok(Value::Return(Box::new(value)));
+        }
+    }
+    Ok(Value::Unit)
+}
+
 fn render_string(
     parts: &[StringPart],
     bindings: &HashMap<String, Value>,
@@ -739,6 +798,20 @@ mod tests {
         check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["Lin"]);
+    }
+
+    #[test]
+    fn executes_if_condition_and_for_loop() {
+        let source = "import yan.platform.console fn main() -> unit { let targets = [\"cli\", \"web\"] for target in targets { if target == \"cli\" { console.println(\"command\") } else { console.println(\"browser\") } } }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        assert_eq!(
+            execute(&program).expect("测试源码应能执行"),
+            vec!["command", "browser"]
+        );
     }
 
     #[test]

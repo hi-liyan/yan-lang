@@ -1,6 +1,6 @@
 # M10：二元与三元元组解构
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/07-collections/02_tuples_and_destructuring.yan` 能被 `yanc run` 检查并执行。
 
 ## 验收标准

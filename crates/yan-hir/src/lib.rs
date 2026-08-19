@@ -214,6 +214,21 @@ pub enum Expression {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// 根据 bool 条件选择一个局部语句块求值。
+    If {
+        condition: Box<Expression>,
+        then_statements: Vec<Statement>,
+        else_statements: Vec<Statement>,
+        span: Span,
+    },
+    /// 遍历列表元素的副作用表达式，结果始终为 unit。
+    For {
+        name: String,
+        name_span: Span,
+        iterable: Box<Expression>,
+        statements: Vec<Statement>,
+        span: Span,
+    },
     Return {
         value: Box<Expression>,
         span: Span,
@@ -279,6 +294,8 @@ impl Expression {
             | Self::Map { span, .. }
             | Self::Tuple { span, .. }
             | Self::Match { span, .. }
+            | Self::If { span, .. }
+            | Self::For { span, .. }
             | Self::Return { span, .. }
             | Self::Try { span, .. }
             | Self::Variable { span, .. }
@@ -585,6 +602,39 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             arms: arms
                 .into_iter()
                 .map(lower_match_arm)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::If {
+            condition,
+            then_statements,
+            else_statements,
+            span,
+        } => Expression::If {
+            condition: Box::new(lower_expression(*condition)?),
+            then_statements: then_statements
+                .into_iter()
+                .map(lower_statement)
+                .collect::<Result<Vec<_>, _>>()?,
+            else_statements: else_statements
+                .into_iter()
+                .map(lower_statement)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::For {
+            name,
+            name_span,
+            iterable,
+            statements,
+            span,
+        } => Expression::For {
+            name,
+            name_span,
+            iterable: Box::new(lower_expression(*iterable)?),
+            statements: statements
+                .into_iter()
+                .map(lower_statement)
                 .collect::<Result<Vec<_>, _>>()?,
             span,
         },

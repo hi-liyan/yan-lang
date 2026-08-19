@@ -316,6 +316,21 @@ pub enum Expression {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// 根据 bool 条件从两个语句块中选择一个求值。
+    If {
+        condition: Box<Expression>,
+        then_statements: Vec<Statement>,
+        else_statements: Vec<Statement>,
+        span: Span,
+    },
+    /// 遍历列表中的每个元素并执行语句块。
+    For {
+        name: String,
+        name_span: Span,
+        iterable: Box<Expression>,
+        statements: Vec<Statement>,
+        span: Span,
+    },
     Return {
         value: Box<Expression>,
         span: Span,
@@ -381,6 +396,8 @@ impl Expression {
             | Self::Map { span, .. }
             | Self::Tuple { span, .. }
             | Self::Match { span, .. }
+            | Self::If { span, .. }
+            | Self::For { span, .. }
             | Self::Return { span, .. }
             | Self::Try { span, .. }
             | Self::Variable { span, .. }
@@ -499,6 +516,7 @@ struct Parser<'source, 'tokens> {
     source: &'source str,
     tokens: &'tokens [Token],
     position: usize,
+    allow_struct_literal: bool,
 }
 
 impl<'source, 'tokens> Parser<'source, 'tokens> {
@@ -507,6 +525,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             source,
             tokens,
             position: 0,
+            allow_struct_literal: true,
         }
     }
 
@@ -656,13 +675,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         self.consume_kind(TokenKind::RightParen, "`)`")?;
         self.consume_kind(TokenKind::Arrow, "`->`")?;
         let return_type = self.parse_type()?;
-        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
-
-        let mut statements = Vec::new();
-        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
-            statements.push(self.parse_statement()?);
-        }
-        self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        let statements = self.parse_statement_block()?;
 
         Ok(Function {
             name,
@@ -671,6 +684,16 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             return_type,
             statements,
         })
+    }
+
+    fn parse_statement_block(&mut self) -> Result<Vec<Statement>, ParseError> {
+        self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut statements = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            statements.push(self.parse_statement()?);
+        }
+        self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(statements)
     }
 
     fn parse_parameters(&mut self) -> Result<Vec<Parameter>, ParseError> {
@@ -869,6 +892,8 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             TokenKind::LeftParen => self.parse_tuple(),
             TokenKind::LeftBrace => self.parse_map(),
             TokenKind::Identifier if self.peek_text() == Some("match") => self.parse_match(),
+            TokenKind::Identifier if self.peek_text() == Some("if") => self.parse_if(),
+            TokenKind::Identifier if self.peek_text() == Some("for") => self.parse_for(),
             TokenKind::Identifier if self.peek_text() == Some("return") => self.parse_return(),
             TokenKind::Identifier => self.parse_identifier_expression(),
             _ => Err(ParseError {
@@ -876,6 +901,43 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 message: "expected an expression".to_owned(),
             }),
         }
+    }
+
+    fn parse_if(&mut self) -> Result<Expression, ParseError> {
+        let keyword = self.consume_text("if", "`if`")?;
+        // 条件后的 `{` 是 if 分支起始，不能被变量后的结构体字面量解析抢先消费。
+        self.allow_struct_literal = false;
+        let condition = self.parse_expression()?;
+        self.allow_struct_literal = true;
+        let then_statements = self.parse_statement_block()?;
+        self.consume_text("else", "`else`")?;
+        let else_statements = self.parse_statement_block()?;
+        let end = self.tokens[self.position - 1].span.end;
+        Ok(Expression::If {
+            condition: Box::new(condition),
+            then_statements,
+            else_statements,
+            span: Span::new(keyword.span.start, end),
+        })
+    }
+
+    fn parse_for(&mut self) -> Result<Expression, ParseError> {
+        let keyword = self.consume_text("for", "`for`")?;
+        let (name, name_span) = self.consume_identifier("loop variable name")?;
+        self.consume_text("in", "`in`")?;
+        // iterable 后的 `{` 是循环体起始，不能被结构体字面量解析消费。
+        self.allow_struct_literal = false;
+        let iterable = self.parse_expression()?;
+        self.allow_struct_literal = true;
+        let statements = self.parse_statement_block()?;
+        let end = self.tokens[self.position - 1].span.end;
+        Ok(Expression::For {
+            name,
+            name_span,
+            iterable: Box::new(iterable),
+            statements,
+            span: Span::new(keyword.span.start, end),
+        })
     }
 
     fn parse_tuple(&mut self) -> Result<Expression, ParseError> {
@@ -1024,7 +1086,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             });
         }
 
-        if self.at_kind(TokenKind::LeftBrace) {
+        if self.allow_struct_literal && self.at_kind(TokenKind::LeftBrace) {
             return self.parse_struct_literal(first, first_span);
         }
 
@@ -1262,6 +1324,26 @@ mod tests {
         assert!(matches!(
             &program.functions[0].statements[0],
             Statement::Expression(Expression::Match { arms, .. }) if arms.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_if_and_for_statement_blocks() {
+        let source = "fn main() -> unit { let ready = true if ready == true { console.println(\"ready\") } else { console.println(\"pending\") } for target in [\"cli\", \"web\"] { console.println(target) } }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
+
+        assert!(matches!(
+            &program.functions[0].statements[1],
+            Statement::Expression(Expression::If {
+                then_statements,
+                else_statements,
+                ..
+            }) if then_statements.len() == 1 && else_statements.len() == 1
+        ));
+        assert!(matches!(
+            &program.functions[0].statements[2],
+            Statement::Expression(Expression::For { statements, .. }) if statements.len() == 1
         ));
     }
 
