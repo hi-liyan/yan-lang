@@ -1,6 +1,6 @@
 # M8：Result 与错误传播
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/06-result/01_result.yan` 能被 `yanc run` 检查并执行。
 
 ## 前提

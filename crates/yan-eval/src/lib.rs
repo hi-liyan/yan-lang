@@ -12,8 +12,17 @@ use yan_source::Span;
 pub fn execute(program: &Program) -> Result<Vec<String>, EvalError> {
     let main = find_function(program, "main", Span::default())?;
     let mut output = Vec::new();
-    let _ = execute_function(program, main, Vec::new(), &mut output)?;
-    Ok(output)
+    match execute_function(program, main, Vec::new(), &mut output)? {
+        Value::Outcome(Ok(_)) | Value::Unit => Ok(output),
+        Value::Outcome(Err(error)) => Err(EvalError::new(
+            main.name_span,
+            format!("main returned Err({})", error.display()),
+        )),
+        value => Err(EvalError::new(
+            main.name_span,
+            format!("main returned an unsupported value `{}`", value.display()),
+        )),
+    }
 }
 
 /// 解释执行中发现的内部不变量破坏。
@@ -219,6 +228,7 @@ fn evaluate(
                 "type-checked `?` must use a Result value",
             )),
         },
+        Expression::Variable { name, .. } if name == "None" => Ok(Value::Optional(None)),
         Expression::Variable { name, span } => bindings
             .get(name)
             .cloned()
@@ -715,5 +725,17 @@ mod tests {
         check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["8080"]);
+    }
+
+    #[test]
+    fn reports_err_returned_from_main() {
+        let source = "enum ConfigError { MissingPort } fn parse_port(value: Option<string>) -> Result<int, ConfigError> { match value { Some(text) => Ok(text.to_int()?) None => Err(ConfigError.MissingPort) } } fn main() -> Result<int, ConfigError> { let port = parse_port(None)? Ok(port) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        let error = execute(&program).expect_err("main 返回 Err 必须作为执行失败报告");
+        assert_eq!(error.message, "main returned Err(ConfigError.MissingPort)");
     }
 }

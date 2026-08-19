@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M8 Result。只允许实现 `docs/milestones/m8-result.md` 中的内建 `Result<T, E>`、`Ok`/`Err`、Result 穷尽 `match`、同错误类型的 `?`、显式 `return` 和 `string.to_int()`，并保持 M2、M3、M4、M5、M6、M7 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、解构、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、独立 `None` 构造、Option 方法、嵌套 Option、Result 方法、任意成员调用、if、for、while、除 Result 传播外的 `?`、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M9 None 构造推断。只允许实现 `docs/milestones/m9-none-construction.md` 中按 `Option<T>` 函数参数期望类型构造 `None`，并保持 M2 至 M8 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、解构、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、Option 方法、嵌套 Option、Result 方法、任意成员调用、if、for、while、除 Result 传播外的 `?`、递归、用户模块、package、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

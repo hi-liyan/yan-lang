@@ -20,7 +20,7 @@ fn parse_port(value: Option<string>) -> Result<int, ConfigError> {
 }
 
 fn main() -> Result<int, ConfigError> {
-  let port = parse_port(Some("8080"))?
+  let port = parse_port(None)?
   console.println(port)
 
   Ok(0)

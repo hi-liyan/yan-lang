@@ -757,14 +757,14 @@ fn type_of(
                 ));
             }
             for (argument, expected) in arguments.iter().zip(&signature.parameters) {
-                if &type_of(
+                if !argument_matches_expected_type(
                     argument,
+                    expected,
                     bindings,
                     signatures,
                     declarations,
                     console_imported,
-                )? != expected
-                {
+                )? {
                     return Err(error(
                         argument.span(),
                         format!("function `{name}` argument type does not match"),
@@ -898,6 +898,30 @@ fn type_of(
         }
         Expression::Call { span, .. } => Err(error(*span, "M4 does not support this call path")),
     }
+}
+
+/// 在已知函数参数类型的唯一上下文中，将 `None` 构造为对应的 Option 空值。
+fn argument_matches_expected_type(
+    argument: &Expression,
+    expected: &Type,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<bool, TypeError> {
+    if matches!(argument, Expression::Variable { name, .. } if name == "None") {
+        return Ok(matches!(expected, Type::Option(_)));
+    }
+    Ok(types_compatible(
+        &type_of(
+            argument,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        )?,
+        expected,
+    ))
 }
 
 /// 验证 enum 变体构造的载荷数量和类型。构造表达式的路径已由 parser 保留，必须在
@@ -1455,5 +1479,13 @@ mod tests {
 
         let error = check_source(source).expect_err("缺少 None 分支的 Option match 必须失败");
         assert_eq!(error.message, "Option match is missing `None` arm");
+    }
+
+    #[test]
+    fn infers_none_from_option_function_parameter() {
+        let source =
+            "fn accept(value: Option<string>) -> unit { } fn main() -> unit { accept(None) }";
+
+        check_source(source).expect("None 应从 Option 参数类型推断为空值");
     }
 }
