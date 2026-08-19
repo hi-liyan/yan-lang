@@ -150,6 +150,10 @@ fn check_declared_type(
         Type::List(element) | Type::Map(element) | Type::Option(element) => {
             check_declared_type(element, declarations, span)
         }
+        Type::Result(ok, error) => {
+            check_declared_type(ok, declarations, span)?;
+            check_declared_type(error, declarations, span)
+        }
         Type::Named(name)
             if !declarations.newtypes.contains_key(name)
                 && !declarations.structs.contains_key(name)
@@ -250,6 +254,7 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             calls.extend(arms.iter().flat_map(|arm| expression_calls(&arm.value)));
             calls
         }
+        Expression::Return { value, .. } | Expression::Try { value, .. } => expression_calls(value),
         Expression::StructLiteral { fields, .. } => fields
             .iter()
             .flat_map(|field| expression_calls(&field.value))
@@ -314,10 +319,12 @@ fn collect_signatures(program: &Program) -> Result<HashMap<String, Signature>, T
         }
         if function.name == "main" {
             main_count += 1;
-            if !function.parameters.is_empty() || function.return_type != Type::Unit {
+            if !function.parameters.is_empty()
+                || !matches!(function.return_type, Type::Unit | Type::Result(_, _))
+            {
                 return Err(error(
                     function.name_span,
-                    "main must not have parameters and must declare `-> unit`",
+                    "main must not have parameters and must declare `-> unit` or `-> Result<T, E>`",
                 ));
             }
         }
@@ -388,7 +395,7 @@ fn check_function(
             }
         }
     }
-    if tail_type != function.return_type {
+    if !types_compatible(&tail_type, &function.return_type) {
         return Err(error(
             function.name_span,
             format!(
@@ -565,6 +572,15 @@ fn type_of(
             declarations,
             console_imported,
         ),
+        Expression::Return { .. } => Ok(Type::Never),
+        Expression::Try { value, span } => {
+            let Type::Result(ok, _) =
+                type_of(value, bindings, signatures, declarations, console_imported)?
+            else {
+                return Err(error(*span, "`?` requires a Result value"));
+            };
+            Ok(*ok)
+        }
         Expression::Add { left, right, span } | Expression::Multiply { left, right, span } => {
             let left_type = type_of(left, bindings, signatures, declarations, console_imported)?;
             let right_type = type_of(right, bindings, signatures, declarations, console_imported)?;
@@ -658,6 +674,57 @@ fn type_of(
                 ));
             }
             Ok(Type::Option(Box::new(element)))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.iter().map(String::as_str).eq(["Ok"]) => {
+            let [value] = arguments.as_slice() else {
+                return Err(error(*span, "Ok requires exactly one argument"));
+            };
+            Ok(Type::Result(
+                Box::new(type_of(
+                    value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                )?),
+                Box::new(Type::Never),
+            ))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.iter().map(String::as_str).eq(["Err"]) => {
+            let [value] = arguments.as_slice() else {
+                return Err(error(*span, "Err requires exactly one argument"));
+            };
+            Ok(Type::Result(
+                Box::new(Type::Never),
+                Box::new(type_of(
+                    value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                )?),
+            ))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.len() == 2 && path[1] == "to_int" => {
+            if !arguments.is_empty() {
+                return Err(error(*span, "string.to_int does not accept arguments"));
+            }
+            if bindings.get(&path[0]).map(|binding| &binding.ty) != Some(&Type::String) {
+                return Err(error(*span, "string.to_int requires a string variable"));
+            }
+            Ok(Type::Result(Box::new(Type::Int), Box::new(Type::Unit)))
         }
         Expression::Call {
             path,
@@ -922,6 +989,16 @@ fn type_of_match(
             declarations,
             console_imported,
         ),
+        Type::Result(ok, error) => type_of_result_match(
+            &ok,
+            &error,
+            arms,
+            span,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        ),
         _ => Err(error(
             target.span(),
             "match requires an enum or Option value",
@@ -1106,20 +1183,103 @@ fn type_of_option_match(
     result_type.ok_or_else(|| error(span, "match must contain at least one arm"))
 }
 
+fn type_of_result_match(
+    ok: &Type,
+    error_type: &Type,
+    arms: &[yan_hir::MatchArm],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let mut seen = HashMap::new();
+    let mut result_type = None;
+    for arm in arms {
+        if !arm.pattern.enum_name.is_empty() {
+            return Err(error(
+                arm.pattern.enum_name_span,
+                "Result match arms must use `Ok` or `Err`",
+            ));
+        }
+        if seen.insert(arm.pattern.variant.as_str(), ()).is_some() {
+            return Err(error(
+                arm.pattern.variant_span,
+                format!("Result match arm `{}` is duplicated", arm.pattern.variant),
+            ));
+        }
+        let payload_type = match arm.pattern.variant.as_str() {
+            "Ok" => ok,
+            "Err" => error_type,
+            _ => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    "Result match arms must use `Ok` or `Err`",
+                ))
+            }
+        };
+        let Some((binding, _)) = &arm.pattern.binding else {
+            return Err(error(
+                arm.pattern.variant_span,
+                "Result match arm requires a payload binding",
+            ));
+        };
+        let mut arm_bindings = bindings.clone();
+        arm_bindings.insert(
+            binding.clone(),
+            Binding {
+                ty: payload_type.clone(),
+                mutable: false,
+            },
+        );
+        let arm_type = type_of(
+            &arm.value,
+            &arm_bindings,
+            signatures,
+            declarations,
+            console_imported,
+        )?;
+        check_match_result_type(&mut result_type, arm_type, arm.value.span())?;
+    }
+    for variant in ["Ok", "Err"] {
+        if !seen.contains_key(variant) {
+            return Err(error(
+                span,
+                format!("Result match is missing `{variant}` arm"),
+            ));
+        }
+    }
+    result_type.ok_or_else(|| error(span, "match must contain at least one arm"))
+}
+
 /// 统一校验所有 match 分支的结果类型，保证 match 保持单一表达式类型。
 fn check_match_result_type(
     result_type: &mut Option<Type>,
     arm_type: Type,
     span: Span,
 ) -> Result<(), TypeError> {
+    if arm_type == Type::Never {
+        return Ok(());
+    }
     if let Some(expected) = result_type {
-        if &arm_type != expected {
+        if !types_compatible(&arm_type, expected) {
             return Err(error(span, "match arm result types must be the same"));
         }
     } else {
         *result_type = Some(arm_type);
     }
     Ok(())
+}
+
+fn types_compatible(actual: &Type, expected: &Type) -> bool {
+    match (actual, expected) {
+        (Type::Never, _) | (_, Type::Never) => true,
+        (Type::Result(actual_ok, actual_error), Type::Result(expected_ok, expected_error)) => {
+            types_compatible(actual_ok, expected_ok)
+                && types_compatible(actual_error, expected_error)
+        }
+        _ => actual == expected,
+    }
 }
 
 fn statement_span(statement: &Statement) -> Span {

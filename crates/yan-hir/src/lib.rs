@@ -139,6 +139,8 @@ pub enum Type {
     Map(Box<Type>),
     /// 内建可选值，包含一个 T 值或不包含任何值。
     Option(Box<Type>),
+    Result(Box<Type>, Box<Type>),
+    Never,
     /// 由源文件声明的名义类型，包括新类型和结构体。
     Named(String),
 }
@@ -168,25 +170,54 @@ pub enum Statement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expression {
     /// 整数字面量。
-    Integer { value: i64, span: Span },
+    Integer {
+        value: i64,
+        span: Span,
+    },
     /// 浮点数字面量。
-    Float { value: String, span: Span },
+    Float {
+        value: String,
+        span: Span,
+    },
     /// 布尔字面量。
-    Boolean { value: bool, span: Span },
+    Boolean {
+        value: bool,
+        span: Span,
+    },
     /// 由文本和变量插值片段构成的字符串字面量。
-    String { parts: Vec<StringPart>, span: Span },
+    String {
+        parts: Vec<StringPart>,
+        span: Span,
+    },
     /// 列表字面量。
-    List { values: Vec<Expression>, span: Span },
+    List {
+        values: Vec<Expression>,
+        span: Span,
+    },
     /// 键为 string 的 map 字面量。
-    Map { entries: Vec<MapEntry>, span: Span },
+    Map {
+        entries: Vec<MapEntry>,
+        span: Span,
+    },
     /// 对 enum 值进行穷尽匹配的表达式。
     Match {
         target: Box<Expression>,
         arms: Vec<MatchArm>,
         span: Span,
     },
+    Return {
+        value: Box<Expression>,
+        span: Span,
+    },
+    Try {
+        value: Box<Expression>,
+        span: Span,
+    },
     /// 局部变量读取。
-    Variable { name: String, span: Span },
+    Variable {
+        name: String,
+        span: Span,
+    },
     /// 平台或后续普通函数调用。
     Call {
         path: Vec<String>,
@@ -238,6 +269,8 @@ impl Expression {
             | Self::List { span, .. }
             | Self::Map { span, .. }
             | Self::Match { span, .. }
+            | Self::Return { span, .. }
+            | Self::Try { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -456,6 +489,10 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
             }
             Ok(Type::Option(Box::new(element)))
         }
+        ("Result", [ok, error]) => Ok(Type::Result(
+            Box::new(lower_type(ok.clone())?),
+            Box::new(lower_type(error.clone())?),
+        )),
         (name, []) => Ok(Type::Named(name.to_owned())),
         _ => Err(unsupported()),
     }
@@ -520,6 +557,14 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
                 .into_iter()
                 .map(lower_match_arm)
                 .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::Return { value, span } => Expression::Return {
+            value: Box::new(lower_expression(*value)?),
+            span,
+        },
+        SyntaxExpression::Try { value, span } => Expression::Try {
+            value: Box::new(lower_expression(*value)?),
             span,
         },
         SyntaxExpression::Variable { name, span } => Expression::Variable { name, span },

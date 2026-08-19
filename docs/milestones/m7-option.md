@@ -1,6 +1,6 @@
 # M7：Option
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/05-option/01_option.yan` 能被 `yanc run` 检查并执行。
 
 ## 前提

@@ -45,6 +45,8 @@ enum Value {
     List(Vec<Value>),
     Map(Vec<(String, Value)>),
     Optional(Option<Box<Value>>),
+    Outcome(Result<Box<Value>, Box<Value>>),
+    Return(Box<Value>),
     Enum {
         enum_name: String,
         variant: String,
@@ -84,6 +86,9 @@ impl Value {
             }
             Self::Optional(Some(value)) => format!("Some({})", value.display()),
             Self::Optional(None) => "None".to_owned(),
+            Self::Outcome(Ok(value)) => format!("Ok({})", value.display()),
+            Self::Outcome(Err(value)) => format!("Err({})", value.display()),
+            Self::Return(value) => value.display(),
             Self::Enum {
                 enum_name,
                 variant,
@@ -127,7 +132,9 @@ fn execute_function(
                 return evaluate(expression, program, &bindings, output);
             }
         }
-        execute_statement(statement, program, &mut bindings, output)?;
+        if let Some(value) = execute_statement(statement, program, &mut bindings, output)? {
+            return Ok(value);
+        }
     }
     Ok(Value::Unit)
 }
@@ -137,10 +144,13 @@ fn execute_statement(
     program: &Program,
     bindings: &mut HashMap<String, Value>,
     output: &mut Vec<String>,
-) -> Result<(), EvalError> {
+) -> Result<Option<Value>, EvalError> {
     match statement {
         Statement::Let { name, value, .. } => {
             let value = evaluate(value, program, bindings, output)?;
+            if let Value::Return(value) = value {
+                return Ok(Some(*value));
+            }
             bindings.insert(name.clone(), value);
         }
         Statement::Assign {
@@ -155,13 +165,18 @@ fn execute_statement(
                     format!("undefined variable `{name}`"),
                 ));
             };
+            if let Value::Return(value) = value {
+                return Ok(Some(*value));
+            }
             *binding = value;
         }
         Statement::Expression(expression) => {
-            let _ = evaluate(expression, program, bindings, output)?;
+            if let Value::Return(value) = evaluate(expression, program, bindings, output)? {
+                return Ok(Some(*value));
+            }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn evaluate(
@@ -193,6 +208,17 @@ fn evaluate(
         Expression::Match { target, arms, span } => {
             evaluate_match(target, arms, *span, program, bindings, output)
         }
+        Expression::Return { value, .. } => Ok(Value::Return(Box::new(evaluate(
+            value, program, bindings, output,
+        )?))),
+        Expression::Try { value, span } => match evaluate(value, program, bindings, output)? {
+            Value::Outcome(Ok(value)) => Ok(*value),
+            Value::Outcome(Err(error)) => Ok(Value::Return(Box::new(Value::Outcome(Err(error))))),
+            _ => Err(EvalError::new(
+                *span,
+                "type-checked `?` must use a Result value",
+            )),
+        },
         Expression::Variable { name, span } => bindings
             .get(name)
             .cloned()
@@ -365,6 +391,52 @@ fn evaluate(
             path,
             arguments,
             span,
+        } if path.iter().map(String::as_str).eq(["Ok"]) => {
+            let [value] = arguments.as_slice() else {
+                return Err(EvalError::new(*span, "Ok requires exactly one argument"));
+            };
+            Ok(Value::Outcome(Ok(Box::new(evaluate(
+                value, program, bindings, output,
+            )?))))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.iter().map(String::as_str).eq(["Err"]) => {
+            let [value] = arguments.as_slice() else {
+                return Err(EvalError::new(*span, "Err requires exactly one argument"));
+            };
+            Ok(Value::Outcome(Err(Box::new(evaluate(
+                value, program, bindings, output,
+            )?))))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } if path.len() == 2 && path[1] == "to_int" => {
+            if !arguments.is_empty() {
+                return Err(EvalError::new(
+                    *span,
+                    "string.to_int does not accept arguments",
+                ));
+            }
+            let Some(Value::String(value)) = bindings.get(&path[0]) else {
+                return Err(EvalError::new(
+                    *span,
+                    "string.to_int requires a string variable",
+                ));
+            };
+            match value.parse::<i64>() {
+                Ok(value) => Ok(Value::Outcome(Ok(Box::new(Value::Integer(value))))),
+                Err(_) => Ok(Value::Outcome(Err(Box::new(Value::Unit)))),
+            }
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
         } if path.len() == 2
             && program
                 .enums
@@ -500,6 +572,22 @@ fn evaluate_match(
                 })?;
             evaluate_match_arm(arm, payload, program, bindings, output)
         }
+        Value::Outcome(outcome) => {
+            let (variant, payload) = match outcome {
+                Ok(value) => ("Ok", Some(value)),
+                Err(value) => ("Err", Some(value)),
+            };
+            let arm = arms
+                .iter()
+                .find(|arm| arm.pattern.enum_name.is_empty() && arm.pattern.variant == variant)
+                .ok_or_else(|| {
+                    EvalError::new(
+                        span,
+                        format!("type-checked Result match is missing `{variant}` arm"),
+                    )
+                })?;
+            evaluate_match_arm(arm, payload, program, bindings, output)
+        }
         _ => Err(EvalError::new(
             span,
             "type-checked match must use an enum or Option value",
@@ -616,5 +704,16 @@ mod tests {
         check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["Lin"]);
+    }
+
+    #[test]
+    fn executes_result_match_and_propagation() {
+        let source = "import yan.platform.console enum ConfigError { MissingPort InvalidPort(value: string) } fn parse_port(value: Option<string>) -> Result<int, ConfigError> { let text = match value { Some(text) => text None => return Err(ConfigError.MissingPort) } match text.to_int() { Ok(port) => Ok(port) Err(_) => Err(ConfigError.InvalidPort(text)) } } fn main() -> Result<int, ConfigError> { let port = parse_port(Some(\"8080\"))? console.println(port) Ok(0) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["8080"]);
     }
 }

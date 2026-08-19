@@ -34,6 +34,7 @@ pub enum TokenKind {
     Greater,
     Arrow,
     FatArrow,
+    Question,
 }
 
 /// 一个带原始源文件位置的 token。
@@ -268,25 +269,54 @@ pub enum Statement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expression {
     /// 十进制整数。
-    Integer { value: i64, span: Span },
+    Integer {
+        value: i64,
+        span: Span,
+    },
     /// 十进制浮点数。
-    Float { value: String, span: Span },
+    Float {
+        value: String,
+        span: Span,
+    },
     /// 布尔值。
-    Boolean { value: bool, span: Span },
+    Boolean {
+        value: bool,
+        span: Span,
+    },
     /// 未转义的字符串内容。
-    String { value: String, span: Span },
+    String {
+        value: String,
+        span: Span,
+    },
     /// 有序列表字面量。
-    List { values: Vec<Expression>, span: Span },
+    List {
+        values: Vec<Expression>,
+        span: Span,
+    },
     /// 键为字符串的 map 字面量。
-    Map { entries: Vec<MapEntry>, span: Span },
+    Map {
+        entries: Vec<MapEntry>,
+        span: Span,
+    },
     /// 对 enum 值进行穷尽匹配的表达式。
     Match {
         target: Box<Expression>,
         arms: Vec<MatchArm>,
         span: Span,
     },
+    Return {
+        value: Box<Expression>,
+        span: Span,
+    },
+    Try {
+        value: Box<Expression>,
+        span: Span,
+    },
     /// 局部变量引用。
-    Variable { name: String, span: Span },
+    Variable {
+        name: String,
+        span: Span,
+    },
     /// 以模块式名称调用的函数，例如 `console.println(value)`。
     Call {
         path: Vec<String>,
@@ -338,6 +368,8 @@ impl Expression {
             | Self::List { span, .. }
             | Self::Map { span, .. }
             | Self::Match { span, .. }
+            | Self::Return { span, .. }
+            | Self::Try { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -437,6 +469,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             b'*' => push_symbol(&mut tokens, TokenKind::Asterisk, &mut index),
             b'<' => push_symbol(&mut tokens, TokenKind::Less, &mut index),
             b'>' => push_symbol(&mut tokens, TokenKind::Greater, &mut index),
+            b'?' => push_symbol(&mut tokens, TokenKind::Question, &mut index),
             _ => return Err(lex_error(start, start + 1, "unrecognized character")),
         }
     }
@@ -738,14 +771,25 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     }
 
     fn parse_multiplication(&mut self) -> Result<Expression, ParseError> {
-        let mut expression = self.parse_primary()?;
+        let mut expression = self.parse_postfix()?;
         while self.consume_if(TokenKind::Asterisk).is_some() {
-            let right = self.parse_primary()?;
+            let right = self.parse_postfix()?;
             let span = Span::new(expression.span().start, right.span().end);
             expression = Expression::Multiply {
                 left: Box::new(expression),
                 right: Box::new(right),
                 span,
+            };
+        }
+        Ok(expression)
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_primary()?;
+        while let Some(question) = self.consume_if(TokenKind::Question) {
+            expression = Expression::Try {
+                span: Span::new(expression.span().start, question.span.end),
+                value: Box::new(expression),
             };
         }
         Ok(expression)
@@ -788,12 +832,22 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             TokenKind::LeftBracket => self.parse_list(),
             TokenKind::LeftBrace => self.parse_map(),
             TokenKind::Identifier if self.peek_text() == Some("match") => self.parse_match(),
+            TokenKind::Identifier if self.peek_text() == Some("return") => self.parse_return(),
             TokenKind::Identifier => self.parse_identifier_expression(),
             _ => Err(ParseError {
                 span: token.span,
                 message: "expected an expression".to_owned(),
             }),
         }
+    }
+
+    fn parse_return(&mut self) -> Result<Expression, ParseError> {
+        let keyword = self.consume_text("return", "`return`")?;
+        let value = self.parse_expression()?;
+        Ok(Expression::Return {
+            span: Span::new(keyword.span.start, value.span().end),
+            value: Box::new(value),
+        })
     }
 
     fn parse_list(&mut self) -> Result<Expression, ParseError> {
@@ -840,9 +894,20 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         // M6 的 match 目标限定为局部 enum 值；直接读取标识符可避免紧随的 `{`
         // 被既有 parser 当成结构体字面量，从而把分支体错误地解析为字段。
         let (target_name, target_span) = self.consume_identifier("match target variable")?;
-        let target = Expression::Variable {
-            name: target_name,
-            span: target_span,
+        let target = if self.consume_if(TokenKind::Dot).is_some() {
+            let (method, method_span) = self.consume_identifier("match target method")?;
+            self.consume_kind(TokenKind::LeftParen, "`(`")?;
+            self.consume_kind(TokenKind::RightParen, "`)`")?;
+            Expression::Call {
+                path: vec![target_name, method],
+                arguments: Vec::new(),
+                span: Span::new(target_span.start, method_span.end + 2),
+            }
+        } else {
+            Expression::Variable {
+                name: target_name,
+                span: target_span,
+            }
         };
         self.consume_kind(TokenKind::LeftBrace, "`{`")?;
         let mut arms = Vec::new();
