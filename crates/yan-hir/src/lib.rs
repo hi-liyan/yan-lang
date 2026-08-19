@@ -440,8 +440,8 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
         ("bool", []) => Ok(Type::Bool),
         ("string", []) => Ok(Type::String),
         ("unit", []) => Ok(Type::Unit),
-        ("list", [element]) => Ok(Type::List(Box::new(lower_type(element.clone())?))),
-        ("map", [key, value]) if key.name == "string" && key.arguments.is_empty() => {
+        ("List", [element]) => Ok(Type::List(Box::new(lower_type(element.clone())?))),
+        ("Map", [key, value]) if key.name == "string" && key.arguments.is_empty() => {
             Ok(Type::Map(Box::new(lower_type(value.clone())?)))
         }
         (name, []) => Ok(Type::Named(name.to_owned())),

@@ -33,13 +33,13 @@ Yan
 - 可选的 `module a.b` 头部与 `import yan.platform.console`。
 - 无参数的 `fn main() -> unit { ... }`。
 - `let`、`let mut`、可选 `name: type` 标注和赋值。
-- `int`、`bool`、`string`、`unit`、`list<string>`。
+- `int`、`bool`、`string`、`unit`、`List<string>`。
 - 整数 `+`、同类型基础值 `==`、变量引用、字符串/整数/布尔/列表字面量。
 - `console.println(value)`。
 
 ## 不包含
 
-- 其他函数、参数、返回值、控制流、struct、enum、option、result、字符串插值。
+- 其他函数、参数、返回值、控制流、struct、enum、Option、Result、字符串插值。
 - 用户 module 导入、项目文件路径一致性校验、package、async、文件 I/O、HTTP、数据库和 Rust 代码生成。
 - 对其他 `examples/language-design/` 文件的兼容承诺。
 

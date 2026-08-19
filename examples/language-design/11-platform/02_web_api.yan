@@ -12,7 +12,7 @@ fn health(request: http.Request) -> http.Response {
   http.ok(json.encode(body))
 }
 
-fn main() -> result<int, http.Error> {
+fn main() -> Result<int, http.Error> {
   let server = http.server()
     .get("/health", health)
 

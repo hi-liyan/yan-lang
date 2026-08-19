@@ -40,7 +40,7 @@ Lin
 
 - 类型别名、隐式转换、显式解包或转换函数。
 - struct 方法、构造器重载、解构、结构体更新语法、嵌套 struct 定义、泛型 struct、可见性修饰符与派生能力。
-- enum、match、option、result、控制流、递归、源码注释、文档注释、用户模块、async、HTTP、数据库和 Rust 代码生成。
+- enum、match、Option、Result、控制流、递归、源码注释、文档注释、用户模块、async、HTTP、数据库和 Rust 代码生成。
 
 ## 实现策略
 

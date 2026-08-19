@@ -12,7 +12,7 @@ enum RenameTaskError {
   EmptyTitle
 }
 
-fn rename_task(task: Task, title: string) -> result<Task, RenameTaskError> {
+fn rename_task(task: Task, title: string) -> Result<Task, RenameTaskError> {
   if title.is_blank() {
     return Err(RenameTaskError.EmptyTitle)
   }

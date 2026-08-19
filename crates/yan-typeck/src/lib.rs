@@ -1107,7 +1107,7 @@ mod tests {
     #[test]
     fn checks_string_keyed_map_values() {
         let source =
-            "fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } }";
+            "fn main() -> unit { let ports: Map<string, int> = { \"http\": 80 \"https\": 443 } }";
 
         check_source(source).expect("字符串键且值类型一致的 map 应通过类型检查");
     }

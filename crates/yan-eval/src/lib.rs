@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn executes_map_literal_and_displays_entries_in_source_order() {
-        let source = "import yan.platform.console fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } console.println(ports) }";
+        let source = "import yan.platform.console fn main() -> unit { let ports: Map<string, int> = { \"http\": 80 \"https\": 443 } console.println(ports) }";
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");

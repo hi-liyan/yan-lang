@@ -2,7 +2,7 @@ module examples.option
 
 import yan.platform.console
 
-fn display_name(name: option<string>) -> string {
+fn display_name(name: Option<string>) -> string {
   match name {
     Some(value) => value
     None => "anonymous"

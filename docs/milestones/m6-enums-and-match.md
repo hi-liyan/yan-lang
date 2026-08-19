@@ -35,11 +35,12 @@ succeeded
 - 顶层 `enum Name { Variant Variant(value: Type) }` 声明；enum 不支持泛型、方法或嵌套定义。
 - `Name.Variant` 与 `Name.Variant(value)` 变体构造。
 - `match value { Name.Variant => expression Name.Variant(binding) => expression }` 作为表达式；分支体只能是单一既有表达式。
+- 复合类型构造器统一采用 PascalCase：`List<T>`、`Map<string, T>`、`Option<T>`、`Result<T, E>`；本阶段仅迁移已实现的 `List` 与 `Map` 拼写。
 
 ## 不包含
 
-- option、result、泛型 enum、enum 方法、可见性、派生能力、递归 enum、多个或匿名变体载荷。
-- wildcard、guard、嵌套/解构模式、match 语句、match 分支代码块，以及对 struct、list、map、基本值的匹配。
+- Option、Result、泛型 enum、enum 方法、可见性、派生能力、递归 enum、多个或匿名变体载荷。
+- wildcard、guard、嵌套/解构模式、match 语句、match 分支代码块，以及对 struct、List、Map、基本值的匹配。
 - `if`、`for`、`while`、`return`、递归、用户模块、async、HTTP、数据库和 Rust 代码生成。
 
 ## 实现策略

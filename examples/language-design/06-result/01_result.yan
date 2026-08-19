@@ -7,7 +7,7 @@ enum ConfigError {
   InvalidPort(value: string)
 }
 
-fn parse_port(value: option<string>) -> result<int, ConfigError> {
+fn parse_port(value: Option<string>) -> Result<int, ConfigError> {
   let text = match value {
     Some(text) => text
     None => return Err(ConfigError.MissingPort)
@@ -19,7 +19,7 @@ fn parse_port(value: option<string>) -> result<int, ConfigError> {
   }
 }
 
-fn main() -> result<int, ConfigError> {
+fn main() -> Result<int, ConfigError> {
   let port = parse_port(Some("8080"))?
   console.println(port)
 

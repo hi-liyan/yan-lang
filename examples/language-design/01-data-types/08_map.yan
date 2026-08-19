@@ -3,7 +3,7 @@ module examples.data_types.map
 import yan.platform.console
 
 fn main() -> unit {
-  let ports: map<string, int> = {
+  let ports: Map<string, int> = {
     "http": 80
     "https": 443
   }

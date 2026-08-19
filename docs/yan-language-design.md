@@ -76,17 +76,28 @@ Yan 通过受限的语言面和项目约束，消除 Rust 应用开发中最常�
 v0.1 支持：
 
 - `bool`、`int`、`float`、`string`、`bytes`、`unit`。
-- `list<T>`、`map<string, T>`、`option<T>`、`result<T, E>`。
+- `List<T>`、`Map<string, T>`、`Option<T>`、`Result<T, E>`。
 - 具名字段 `struct` 与封闭 `enum`。
 - 用户定义的 `type` 新类型，不提供隐式转换。
 
 `int` 固定为有符号 64 位整数，`float` 固定为 IEEE 754 `f64`，`string` 固定为 UTF-8。没有 `null`，没有 `any`，没有隐式数值转换。
 
+#### 4.1.1 命名约定
+
+Yan 以标识符的大小写直接表达其职责边界：
+
+- 基础类型固定使用小写：`int`、`float`、`bool`、`string`、`bytes`、`unit`。
+- 用户定义类型、`struct`、`enum`、enum 变体、泛型类型构造器与泛型类型参数使用 PascalCase：`User`、`BuildState`、`Succeeded`、`List<T>`、`Map<string, User>`、`Option<T>`、`Result<T, E>`。
+- 函数、局部变量、字段、module 与 package 路径使用小写 snake_case；module/package 的各路径段均为小写，例如 `examples.option` 与 `yan.platform.console`。
+- 常量使用 SCREAMING_SNAKE_CASE，例如 `MAX_SIZE`。
+
+`List`、`Map`、`Option` 与 `Result` 是类型构造器，不是基础类型；其 PascalCase 写法与用户定义类型保持一致。`Some`、`None`、`Ok`、`Err` 作为 enum 变体同样使用 PascalCase。
+
 ### 4.2 控制流与函数
 
 支持 `fn`、`let`、`mut`、`if`、`match`、`for`、`while`、`return` 和 `?`。函数、参数和返回类型均显式声明；只有 `if`、`match` 和代码块可作为表达式产生值。
 
-`?` 仅可传播相同错误类型的 `result<T, E>`。错误域转换必须显式调用 `map_err` 或使用 `match`，避免 AI 在隐式转换中丢失业务语义。
+`?` 仅可传播相同错误类型的 `Result<T, E>`。错误域转换必须显式调用 `map_err` 或使用 `match`，避免 AI 在隐式转换中丢失业务语义。
 
 ### 4.3 有意缺失的能力
 

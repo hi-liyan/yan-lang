@@ -6,7 +6,7 @@ fn main() -> unit {
   let application_name: string = "Yan"
   let build_number = 1
   let release_ready = true
-  let supported_targets: list<string> = ["cli", "web"]
+  let supported_targets: List<string> = ["cli", "web"]
 
   let mut completed_steps = 0
   completed_steps = completed_steps + 1

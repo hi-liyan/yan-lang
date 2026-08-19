@@ -38,7 +38,7 @@ total: 597
 ## 不包含
 
 - `return` 关键字、递归、闭包、函数值、函数重载、默认参数和泛型函数。
-- 控制流、struct、enum、option、result、用户模块、async、HTTP、数据库和 Rust 代码生成。
+- 控制流、struct、enum、Option、Result、用户模块、async、HTTP、数据库和 Rust 代码生成。
 
 ## 实现策略
 

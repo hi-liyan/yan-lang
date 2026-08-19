@@ -42,9 +42,9 @@ adapter 包可以将生态复用限制在经过审查的边界内：Yan 保留�
 Yan 与 Rust adapter 的跨语言边界只应支持：
 
 - `bool`、`int`、`float`、`string`、`bytes`。
-- `list<T>`、`map<string, T>`。
+- `List<T>`、`Map<string, T>`。
 - 已显式映射的 Yan `struct` 与 `enum`。
-- `option<T>` 与 `result<T, E>`。
+- `Option<T>` 与 `Result<T, E>`。
 - 明确标记为不透明资源的句柄，例如 `db.Connection`。
 
 边界不得直接暴露：
@@ -55,7 +55,7 @@ Yan 与 Rust adapter 的跨语言边界只应支持：
 - 可从 Yan 调用路径传播的 panic。
 - `unsafe` 能力。
 
-Rust adapter 必须负责：将 Rust 错误映射为 Yan `result`、将异步实现包装为 Yan 的结构化并发模型、以及将资源包装为受控的不透明句柄。
+Rust adapter 必须负责：将 Rust 错误映射为 Yan `Result`、将异步实现包装为 Yan 的结构化并发模型、以及将资源包装为受控的不透明句柄。
 
 ## 尚未决定的问题
 

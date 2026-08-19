@@ -235,9 +235,9 @@ pub struct Parameter {
 /// 源码中出现的类型写法。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeSyntax {
-    /// 类型名称，例如 `int` 或 `list`。
+    /// 类型名称，例如 `int` 或 `List`。
     pub name: String,
-    /// 泛型类型参数；M3 仅支持 `list<T>` 形式。
+    /// 泛型类型参数；当前已实现 `List<T>` 与 `Map<string, T>` 形式。
     pub arguments: Vec<TypeSyntax>,
     /// 整个类型写法的位置。
     pub span: Span,
@@ -1105,7 +1105,7 @@ mod tests {
     #[test]
     fn parses_string_keyed_map_literal() {
         let source =
-            "fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } }";
+            "fn main() -> unit { let ports: Map<string, int> = { \"http\": 80 \"https\": 443 } }";
         let tokens = lex(source).expect("测试源码应能完成词法分析");
         let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
 

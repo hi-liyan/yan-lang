@@ -7,7 +7,7 @@ fn greet(name: string) -> unit {
   console.println("hello, {name}")
 }
 
-fn main() -> result<int, cli.Error> {
+fn main() -> Result<int, cli.Error> {
   let name = cli.argument("name")?
   greet(name)
 
