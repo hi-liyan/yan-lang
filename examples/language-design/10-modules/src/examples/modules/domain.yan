@@ -1,14 +1,14 @@
 module examples.modules.domain
 
-public type TaskId = int
+pub type TaskId = int
 
-public struct Task {
+pub struct Task {
   id: TaskId
   title: string
   completed: bool
 }
 
-public fn rename_task(task: Task, title: string) -> Task {
+pub fn rename_task(task: Task, title: string) -> Task {
   Task {
     id: task.id
     title: title

@@ -17,7 +17,7 @@
 - `docs/yan-language-design.md`：语言定位、核心原则和长期边界。
 - `docs/milestones/`：当前阶段的目标、验收标准、包含范围与非目标。
 
-当前处于 M12 文件模块与显式导入。只允许实现 `docs/milestones/m12-file-modules.md` 中项目根目录内的模块路径映射、`public` 顶层声明和单符号 import，并保持 M2 至 M11 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、嵌套/赋值解构、位置访问、忽略或剩余模式、单元素或高阶元组、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、Option 方法、嵌套 Option、Result 方法、任意成员调用、省略 `else` 的 if、while、break、continue、范围/map 循环、iterator 方法、除 Result 传播外的 `?`、递归、package、跨项目依赖、相对/通配符/别名 import、重导出、循环导入、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
+当前处于 M13 可变绑定与公开声明关键字。只允许实现 `docs/milestones/m13-mut-and-pub.md` 中 `let mut` 的赋值语义、`pub` 顶层声明与 `public` 关键字移除，并保持 M2 至 M12 可用。除维护已有功能外，禁止加入类型别名、隐式转换、浮点混合算术、指数记法、可变 Map、Map 索引或遍历、bytes I/O、块注释、文档生成 CLI、struct 方法、构造器重载、嵌套/赋值解构、位置访问、忽略或剩余模式、单元素或高阶元组、泛型 struct、enum 方法、泛型 enum、多载荷变体、wildcard 或 guard 模式、嵌套模式、Option 方法、嵌套 Option、Result 方法、任意成员调用、省略 `else` 的 if、while、break、continue、范围/map 循环、iterator 方法、除 Result 传播外的 `?`、递归、package、跨项目依赖、相对/通配符/别名 import、重导出、循环导入、可变字段/集合/全局状态、`pub` 字段/方法/enum variant、async、HTTP、数据库、Rust 代码生成、包管理、formatter 或 capability 检查。
 
 用户需求与当前里程碑冲突时，先更新或新增里程碑文档，再开始实现。不得以“预留接口”为理由创建未使用的抽象、配置项或依赖。
 

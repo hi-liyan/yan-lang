@@ -1550,7 +1550,7 @@ mod tests {
 
     #[test]
     fn checks_library_module_without_main() {
-        let source = "public fn greeting() -> string { \"hello\" }";
+        let source = "pub fn greeting() -> string { \"hello\" }";
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");

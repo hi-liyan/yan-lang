@@ -1,0 +1,5 @@
+module examples.visibility.message
+
+pub fn visible_message() -> string {
+  "visible"
+}

@@ -1,0 +1,11 @@
+module examples.mutation
+
+import yan.platform.console
+
+fn main() -> unit {
+  let mut completed_steps = 0
+  completed_steps = completed_steps + 1
+  completed_steps = completed_steps + 1
+
+  console.println(completed_steps)
+}

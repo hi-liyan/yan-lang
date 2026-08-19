@@ -558,7 +558,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let mut enums = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
-            let public = if self.peek_text() == Some("public") {
+            let public = if self.peek_text() == Some("pub") {
                 self.advance();
                 true
             } else {
@@ -1366,13 +1366,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_public_top_level_declaration() {
-        let source = "public fn greeting() -> string { \"hello\" } fn main() -> unit { }";
+    fn parses_pub_top_level_declaration() {
+        let source = "pub fn greeting() -> string { \"hello\" } fn main() -> unit { }";
         let tokens = lex(source).expect("测试源码应能完成词法分析");
         let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
 
         assert!(program.functions[0].public);
         assert!(!program.functions[1].public);
+    }
+
+    #[test]
+    fn rejects_removed_public_keyword() {
+        let source = "public fn greeting() -> string { \"hello\" }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let error = parse(source, &tokens).expect_err("已移除的 public 关键字必须失败");
+
+        assert_eq!(error.message, "expected a declaration");
     }
 
     #[test]

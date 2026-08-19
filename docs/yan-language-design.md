@@ -119,6 +119,25 @@ module tasks.service
 
 `package` 保留给未来 `yan.project` 中可发布、可依赖和带版本的交付单元，不作为源文件命名空间关键字。
 
+模块默认私有。需要跨模块显式导入的顶层 `type`、`struct`、`enum` 或 `fn` 使用 `pub`：
+
+```yan
+pub fn display_name(name: string) -> string {
+  name
+}
+```
+
+`pub` 不用于字段、方法、enum variant、局部变量或全局状态；Yan 不支持 `public`、`pub(crate)` 等其他可见性写法。
+
+局部绑定默认不可重新赋值。需要在同一函数作用域内更新值时，必须在声明处写出 `mut`：
+
+```yan
+let mut attempts = 0
+attempts = attempts + 1
+```
+
+`mut` 不会改变值的类型，也不使字段、集合、函数参数或全局状态可变。
+
 ### 4.5 注释与文档注释
 
 Yan 源码未来支持两类单行注释：

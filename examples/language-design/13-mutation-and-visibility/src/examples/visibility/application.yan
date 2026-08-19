@@ -1,0 +1,8 @@
+module examples.visibility.application
+
+import examples.visibility.message.visible_message
+import yan.platform.console
+
+fn main() -> unit {
+  console.println(visible_message())
+}

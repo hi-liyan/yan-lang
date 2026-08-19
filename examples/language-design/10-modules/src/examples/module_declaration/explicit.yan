@@ -1,5 +1,5 @@
 module examples.module_declaration.explicit
 
-public fn greeting() -> string {
+pub fn greeting() -> string {
   "hello from an explicit module"
 }
