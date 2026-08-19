@@ -1,5 +1,7 @@
 //! 与 parser 和执行后端解耦的 Yan 高层中间表示。
 
+use std::collections::HashMap;
+
 use yan_source::Span;
 use yan_syntax::{
     Enum as SyntaxEnum, Expression as SyntaxExpression, Field as SyntaxField,
@@ -7,9 +9,33 @@ use yan_syntax::{
     SyntaxProgram, TypeSyntax,
 };
 
+/// 模块在单次编译会话内的稳定标识。
+///
+/// 该标识只用于连接 HIR、Typed HIR 与 MIR，不能写入缓存或暴露为用户可见名称。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ModuleId(pub u32);
+
+/// 顶层声明在单次编译会话内的稳定标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DefId(pub u32);
+
+/// 函数局部绑定在所属函数内的稳定标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LocalId(pub u32);
+
+/// 结构体字段在单次编译会话内的稳定标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FieldId(pub u32);
+
+/// 枚举变体在单次编译会话内的稳定标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VariantId(pub u32);
+
 /// 已降低为编译器语义阶段使用的程序。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
+    /// 当前 HIR 模块的稳定标识。
+    pub id: ModuleId,
     /// 源文件声明的模块路径；M3 允许省略。
     pub module: Option<Vec<String>>,
     /// 显式导入的模块路径。
@@ -27,6 +53,8 @@ pub struct Program {
 /// 已 lowering 的真正新类型声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Newtype {
+    /// 此顶层声明的稳定标识。
+    pub id: DefId,
     /// 是否允许其他模块显式导入该声明。
     pub public: bool,
     /// 新类型名称。
@@ -40,6 +68,8 @@ pub struct Newtype {
 /// 已 lowering 的具名结构体声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Struct {
+    /// 此顶层声明的稳定标识。
+    pub id: DefId,
     /// 是否允许其他模块显式导入该声明。
     pub public: bool,
     /// 结构体名称。
@@ -53,6 +83,8 @@ pub struct Struct {
 /// 已 lowering 的封闭枚举声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Enum {
+    /// 此顶层声明的稳定标识。
+    pub id: DefId,
     /// 是否允许其他模块显式导入该声明。
     pub public: bool,
     /// 枚举名称。
@@ -66,6 +98,8 @@ pub struct Enum {
 /// 已 lowering 的枚举变体。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnumVariant {
+    /// 此枚举变体的稳定标识。
+    pub id: VariantId,
     /// 变体名称。
     pub name: String,
     /// 变体名称在源文件中的位置。
@@ -88,6 +122,8 @@ pub struct EnumPayload {
 /// 已 lowering 的结构体字段。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Field {
+    /// 此字段的稳定标识。
+    pub id: FieldId,
     /// 字段名称。
     pub name: String,
     /// 字段名称的位置。
@@ -101,6 +137,8 @@ pub struct Field {
 /// M3 支持的函数定义。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
+    /// 此顶层函数声明的稳定标识。
+    pub id: DefId,
     /// 是否允许其他模块显式导入该声明。
     pub public: bool,
     /// 函数名称。
@@ -118,6 +156,8 @@ pub struct Function {
 /// 已 lowering 的函数参数。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Parameter {
+    /// 此参数在所属函数内的局部标识。
+    pub id: LocalId,
     /// 参数名称。
     pub name: String,
     /// 参数名称的位置。
@@ -158,11 +198,15 @@ pub enum Type {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Statement {
     Destructure {
+        /// 解构产生的局部绑定标识，顺序与 names 一致。
+        locals: Vec<LocalId>,
         names: Vec<(String, Span)>,
         value: Expression,
     },
     /// 声明局部变量。
     Let {
+        /// 新局部绑定在所属函数内的稳定标识。
+        local: LocalId,
         mutable: bool,
         name: String,
         name_span: Span,
@@ -171,6 +215,8 @@ pub enum Statement {
     },
     /// 重写已有变量的值。
     Assign {
+        /// 已解析的被赋值局部绑定。
+        local: LocalId,
         name: String,
         name_span: Span,
         value: Expression,
@@ -231,6 +277,8 @@ pub enum Expression {
     },
     /// 遍历列表元素的副作用表达式，结果始终为 unit。
     For {
+        /// 循环变量在循环体作用域内的稳定标识。
+        local: LocalId,
         name: String,
         name_span: Span,
         iterable: Box<Expression>,
@@ -247,11 +295,15 @@ pub enum Expression {
     },
     /// 局部变量读取。
     Variable {
+        /// 已解析的局部读取目标；`None` 等内建构造不使用此字段。
+        local: Option<LocalId>,
         name: String,
         span: Span,
     },
     /// 平台或后续普通函数调用。
     Call {
+        /// 已解析的普通函数目标；内建调用和构造不使用此字段。
+        function: Option<DefId>,
         path: Vec<String>,
         arguments: Vec<Expression>,
         span: Span,
@@ -276,6 +328,8 @@ pub enum Expression {
     },
     /// 具名结构体字面量。
     StructLiteral {
+        /// 已解析的结构体声明。
+        structure: DefId,
         name: String,
         name_span: Span,
         fields: Vec<StructFieldValue>,
@@ -283,6 +337,10 @@ pub enum Expression {
     },
     /// 结构体字段读取。
     FieldAccess {
+        /// 结构体字段读取或无载荷 enum 构造的已解析字段目标。
+        field_id: Option<FieldId>,
+        /// 无载荷 enum 构造的已解析变体目标。
+        variant: Option<VariantId>,
         target: Box<Expression>,
         field: String,
         field_span: Span,
@@ -330,6 +388,10 @@ pub struct MapEntry {
 /// HIR match 分支中对 enum 变体的模式。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnumPattern {
+    /// 已解析的 enum 变体目标；Option 和 Result 的内建模式不使用此字段。
+    pub variant_id: Option<VariantId>,
+    /// 分支载荷绑定在该分支作用域内的稳定标识。
+    pub binding_local: Option<LocalId>,
     /// 枚举名称。
     pub enum_name: String,
     /// 枚举名称在源文件中的位置。
@@ -354,6 +416,8 @@ pub struct MatchArm {
 /// 结构体字面量中的一个具名字段赋值。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructFieldValue {
+    /// 已解析的结构体字段声明。
+    pub field_id: Option<FieldId>,
     /// 字段名称。
     pub name: String,
     /// 字段名称的位置。
@@ -368,43 +432,366 @@ pub enum StringPart {
     /// 不需要运行时求值的普通文本。
     Text(String),
     /// `{name}` 形式的局部变量插值。
-    Variable { name: String, span: Span },
+    Variable {
+        /// 已解析的局部绑定；未声明名称保留为空，供类型检查产生用户诊断。
+        local: Option<LocalId>,
+        /// 仅用于诊断显示的源码名称，后续阶段不得重新按名称查找。
+        name: String,
+        /// 插值名称在源码中的位置。
+        span: Span,
+    },
 }
 
 /// 将 parser 产生的语法树转换为后续阶段稳定消费的 HIR。
 pub fn lower(program: SyntaxProgram) -> Result<Program, LowerError> {
-    Ok(Program {
+    let mut next_def = 0_u32;
+    let mut next_field = 0_u32;
+    let mut next_variant = 0_u32;
+    let newtypes = program
+        .newtypes
+        .into_iter()
+        .map(|newtype| {
+            let id = DefId(next_def);
+            next_def += 1;
+            lower_newtype(newtype, id)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let structs = program
+        .structs
+        .into_iter()
+        .map(|structure| {
+            let id = DefId(next_def);
+            next_def += 1;
+            lower_struct(structure, id, &mut next_field)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let enums = program
+        .enums
+        .into_iter()
+        .map(|enumeration| {
+            let id = DefId(next_def);
+            next_def += 1;
+            lower_enum(enumeration, id, &mut next_variant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let functions = program
+        .functions
+        .into_iter()
+        .map(|function| {
+            let id = DefId(next_def);
+            next_def += 1;
+            lower_function(function, id)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut lowered = Program {
+        id: ModuleId(0),
         module: program.module.map(|path| path.segments),
         imports: program
             .imports
             .into_iter()
             .map(|import| import.path.segments)
             .collect(),
-        newtypes: program
-            .newtypes
-            .into_iter()
-            .map(lower_newtype)
-            .collect::<Result<Vec<_>, _>>()?,
-        structs: program
-            .structs
-            .into_iter()
-            .map(lower_struct)
-            .collect::<Result<Vec<_>, _>>()?,
-        enums: program
-            .enums
-            .into_iter()
-            .map(lower_enum)
-            .collect::<Result<Vec<_>, _>>()?,
-        functions: program
-            .functions
-            .into_iter()
-            .map(lower_function)
-            .collect::<Result<Vec<_>, _>>()?,
-    })
+        newtypes,
+        structs,
+        enums,
+        functions,
+    };
+    resolve_references(&mut lowered);
+    Ok(lowered)
 }
 
-fn lower_newtype(newtype: yan_syntax::Newtype) -> Result<Newtype, LowerError> {
+/// 在 HIR 形成后回填所有可由当前模块图确定的语义引用。
+///
+/// 未声明的名称刻意保留为空，后续类型检查据此报告既有的用户诊断；lowering 不把名称
+/// 错误伪装成语法错误。这样每个成功进入 Typed HIR 的引用都已有稳定 ID。
+fn resolve_references(program: &mut Program) {
+    let functions = program
+        .functions
+        .iter()
+        .map(|function| (function.name.clone(), function.id))
+        .collect::<HashMap<_, _>>();
+    let structures = program
+        .structs
+        .iter()
+        .map(|structure| {
+            (
+                structure.name.clone(),
+                (
+                    structure.id,
+                    structure
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.id))
+                        .collect::<HashMap<_, _>>(),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let variants = program
+        .enums
+        .iter()
+        .flat_map(|enumeration| {
+            enumeration.variants.iter().map(move |variant| {
+                (
+                    (enumeration.name.clone(), variant.name.clone()),
+                    variant.id,
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+
+    for function in &mut program.functions {
+        let mut locals = function
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.name.clone(), parameter.id))
+            .collect::<HashMap<_, _>>();
+        let mut next_local = function.parameters.len() as u32;
+        resolve_statements(
+            &mut function.statements,
+            &mut locals,
+            &mut next_local,
+            &functions,
+            &structures,
+            &variants,
+        );
+    }
+}
+
+/// 解析一个顺序语句块，并把块内绑定限定在调用方传入的作用域中。
+fn resolve_statements(
+    statements: &mut [Statement],
+    locals: &mut HashMap<String, LocalId>,
+    next_local: &mut u32,
+    functions: &HashMap<String, DefId>,
+    structures: &HashMap<String, (DefId, HashMap<String, FieldId>)>,
+    variants: &HashMap<(String, String), VariantId>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Destructure {
+                locals: ids,
+                names,
+                value,
+            } => {
+                resolve_expression(value, locals, next_local, functions, structures, variants);
+                *ids = names
+                    .iter()
+                    .map(|(name, _)| {
+                        let id = allocate_local(next_local);
+                        locals.insert(name.clone(), id);
+                        id
+                    })
+                    .collect();
+            }
+            Statement::Let {
+                local,
+                name,
+                value,
+                ..
+            } => {
+                resolve_expression(value, locals, next_local, functions, structures, variants);
+                let id = allocate_local(next_local);
+                *local = id;
+                locals.insert(name.clone(), id);
+            }
+            Statement::Assign { local, name, value, .. } => {
+                resolve_expression(value, locals, next_local, functions, structures, variants);
+                if let Some(id) = locals.get(name) {
+                    *local = *id;
+                }
+            }
+            Statement::Expression(value) => {
+                resolve_expression(value, locals, next_local, functions, structures, variants);
+            }
+        }
+    }
+}
+
+/// 递归回填表达式及嵌套语句块的引用 ID。
+fn resolve_expression(
+    expression: &mut Expression,
+    locals: &HashMap<String, LocalId>,
+    next_local: &mut u32,
+    functions: &HashMap<String, DefId>,
+    structures: &HashMap<String, (DefId, HashMap<String, FieldId>)>,
+    variants: &HashMap<(String, String), VariantId>,
+) {
+    match expression {
+        Expression::String { parts, .. } => {
+            for part in parts {
+                if let StringPart::Variable { local, name, .. } = part {
+                    *local = locals.get(name).copied();
+                }
+            }
+        }
+        Expression::List { values, .. } | Expression::Tuple { values, .. } => {
+            for value in values {
+                resolve_expression(value, locals, next_local, functions, structures, variants);
+            }
+        }
+        Expression::Map { entries, .. } => {
+            for entry in entries {
+                resolve_expression(
+                    &mut entry.value,
+                    locals,
+                    next_local,
+                    functions,
+                    structures,
+                    variants,
+                );
+            }
+        }
+        Expression::Match { target, arms, .. } => {
+            resolve_expression(target, locals, next_local, functions, structures, variants);
+            for arm in arms {
+                arm.pattern.variant_id = variants
+                    .get(&(arm.pattern.enum_name.clone(), arm.pattern.variant.clone()))
+                    .copied();
+                let mut arm_locals = locals.clone();
+                if let Some((name, _)) = &arm.pattern.binding {
+                    let id = allocate_local(next_local);
+                    arm.pattern.binding_local = Some(id);
+                    arm_locals.insert(name.clone(), id);
+                }
+                resolve_expression(
+                    &mut arm.value,
+                    &arm_locals,
+                    next_local,
+                    functions,
+                    structures,
+                    variants,
+                );
+            }
+        }
+        Expression::If {
+            condition,
+            then_statements,
+            else_statements,
+            ..
+        } => {
+            resolve_expression(condition, locals, next_local, functions, structures, variants);
+            let mut then_locals = locals.clone();
+            resolve_statements(
+                then_statements,
+                &mut then_locals,
+                next_local,
+                functions,
+                structures,
+                variants,
+            );
+            let mut else_locals = locals.clone();
+            resolve_statements(
+                else_statements,
+                &mut else_locals,
+                next_local,
+                functions,
+                structures,
+                variants,
+            );
+        }
+        Expression::For {
+            local,
+            name,
+            iterable,
+            statements,
+            ..
+        } => {
+            resolve_expression(iterable, locals, next_local, functions, structures, variants);
+            let id = allocate_local(next_local);
+            *local = id;
+            let mut loop_locals = locals.clone();
+            loop_locals.insert(name.clone(), id);
+            resolve_statements(
+                statements,
+                &mut loop_locals,
+                next_local,
+                functions,
+                structures,
+                variants,
+            );
+        }
+        Expression::Return { value, .. } | Expression::Try { value, .. } => {
+            resolve_expression(value, locals, next_local, functions, structures, variants);
+        }
+        Expression::Variable { local, name, .. } => *local = locals.get(name).copied(),
+        Expression::Call {
+            function,
+            path,
+            arguments,
+            ..
+        } => {
+            *function = (path.len() == 1)
+                .then(|| functions.get(&path[0]).copied())
+                .flatten();
+            for argument in arguments {
+                resolve_expression(
+                    argument,
+                    locals,
+                    next_local,
+                    functions,
+                    structures,
+                    variants,
+                );
+            }
+        }
+        Expression::Add { left, right, .. }
+        | Expression::Multiply { left, right, .. }
+        | Expression::Equal { left, right, .. } => {
+            resolve_expression(left, locals, next_local, functions, structures, variants);
+            resolve_expression(right, locals, next_local, functions, structures, variants);
+        }
+        Expression::StructLiteral {
+            structure,
+            name,
+            fields,
+            ..
+        } => {
+            if let Some((id, declared_fields)) = structures.get(name) {
+                *structure = *id;
+                for field in fields {
+                    field.field_id = declared_fields.get(&field.name).copied();
+                    resolve_expression(
+                        &mut field.value,
+                        locals,
+                        next_local,
+                        functions,
+                        structures,
+                        variants,
+                    );
+                }
+            }
+        }
+        Expression::FieldAccess {
+            target,
+            field,
+            field_id,
+            variant,
+            ..
+        } => {
+            if let Expression::Variable { name, .. } = target.as_ref() {
+                *variant = variants.get(&(name.clone(), field.clone())).copied();
+            }
+            // 字段访问的结构体类型由 typeck 确定；此处仍应解析目标的局部读取。
+            resolve_expression(target, locals, next_local, functions, structures, variants);
+            let _ = field_id;
+        }
+        Expression::Integer { .. }
+        | Expression::Float { .. }
+        | Expression::Boolean { .. } => {}
+    }
+}
+
+/// 分配函数内唯一局部 ID，避免嵌套块和 match 分支复用同一槽位。
+fn allocate_local(next_local: &mut u32) -> LocalId {
+    let id = LocalId(*next_local);
+    *next_local += 1;
+    id
+}
+
+fn lower_newtype(newtype: yan_syntax::Newtype, id: DefId) -> Result<Newtype, LowerError> {
     Ok(Newtype {
+        id,
         public: newtype.public,
         name: newtype.name,
         name_span: newtype.name_span,
@@ -412,21 +799,35 @@ fn lower_newtype(newtype: yan_syntax::Newtype) -> Result<Newtype, LowerError> {
     })
 }
 
-fn lower_struct(structure: yan_syntax::Struct) -> Result<Struct, LowerError> {
+fn lower_struct(
+    structure: yan_syntax::Struct,
+    id: DefId,
+    next_field: &mut u32,
+) -> Result<Struct, LowerError> {
     Ok(Struct {
+        id,
         public: structure.public,
         name: structure.name,
         name_span: structure.name_span,
         fields: structure
             .fields
             .into_iter()
-            .map(lower_declared_field)
+            .map(|field| {
+                let id = FieldId(*next_field);
+                *next_field += 1;
+                lower_declared_field(field, id)
+            })
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
-fn lower_enum(enumeration: SyntaxEnum) -> Result<Enum, LowerError> {
+fn lower_enum(
+    enumeration: SyntaxEnum,
+    id: DefId,
+    next_variant: &mut u32,
+) -> Result<Enum, LowerError> {
     Ok(Enum {
+        id,
         public: enumeration.public,
         name: enumeration.name,
         name_span: enumeration.name_span,
@@ -435,6 +836,11 @@ fn lower_enum(enumeration: SyntaxEnum) -> Result<Enum, LowerError> {
             .into_iter()
             .map(|variant| {
                 Ok(EnumVariant {
+                    id: {
+                        let id = VariantId(*next_variant);
+                        *next_variant += 1;
+                        id
+                    },
                     name: variant.name,
                     name_span: variant.name_span,
                     payload: variant
@@ -453,7 +859,7 @@ fn lower_enum(enumeration: SyntaxEnum) -> Result<Enum, LowerError> {
     })
 }
 
-fn lower_declared_field(field: SyntaxField) -> Result<Field, LowerError> {
+fn lower_declared_field(field: SyntaxField, id: FieldId) -> Result<Field, LowerError> {
     let Some(ty) = field.ty else {
         return Err(LowerError {
             span: field.name_span,
@@ -461,6 +867,7 @@ fn lower_declared_field(field: SyntaxField) -> Result<Field, LowerError> {
         });
     };
     Ok(Field {
+        id,
         name: field.name,
         name_span: field.name_span,
         ty: lower_type(ty)?,
@@ -477,16 +884,19 @@ pub struct LowerError {
     pub message: String,
 }
 
-fn lower_function(function: yan_syntax::Function) -> Result<Function, LowerError> {
+fn lower_function(function: yan_syntax::Function, id: DefId) -> Result<Function, LowerError> {
     Ok(Function {
+        id,
         public: function.public,
         name: function.name,
         name_span: function.name_span,
         parameters: function
             .parameters
             .into_iter()
-            .map(|parameter| {
+            .enumerate()
+            .map(|(index, parameter)| {
                 Ok(Parameter {
+                    id: LocalId(index as u32),
                     name: parameter.name,
                     name_span: parameter.name_span,
                     ty: lower_type(parameter.ty)?,
@@ -548,6 +958,7 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
 fn lower_statement(statement: SyntaxStatement) -> Result<Statement, LowerError> {
     match statement {
         SyntaxStatement::Destructure { names, value } => Ok(Statement::Destructure {
+            locals: Vec::new(),
             names,
             value: lower_expression(value)?,
         }),
@@ -558,6 +969,7 @@ fn lower_statement(statement: SyntaxStatement) -> Result<Statement, LowerError> 
             annotation,
             value,
         } => Ok(Statement::Let {
+            local: LocalId(0),
             mutable,
             name,
             name_span,
@@ -569,6 +981,7 @@ fn lower_statement(statement: SyntaxStatement) -> Result<Statement, LowerError> 
             name_span,
             value,
         } => Ok(Statement::Assign {
+            local: LocalId(0),
             name,
             name_span,
             value: lower_expression(value)?,
@@ -641,6 +1054,7 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             statements,
             span,
         } => Expression::For {
+            local: LocalId(0),
             name,
             name_span,
             iterable: Box::new(lower_expression(*iterable)?),
@@ -658,12 +1072,17 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             value: Box::new(lower_expression(*value)?),
             span,
         },
-        SyntaxExpression::Variable { name, span } => Expression::Variable { name, span },
+        SyntaxExpression::Variable { name, span } => Expression::Variable {
+            local: None,
+            name,
+            span,
+        },
         SyntaxExpression::Call {
             path,
             arguments,
             span,
         } => Expression::Call {
+            function: None,
             path,
             arguments: arguments
                 .into_iter()
@@ -692,6 +1111,7 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             fields,
             span,
         } => Expression::StructLiteral {
+            structure: DefId(0),
             name,
             name_span,
             fields: fields
@@ -706,6 +1126,8 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             field_span,
             span,
         } => Expression::FieldAccess {
+            field_id: None,
+            variant: None,
             target: Box::new(lower_expression(*target)?),
             field,
             field_span,
@@ -725,6 +1147,8 @@ fn lower_map_entry(entry: SyntaxMapEntry) -> Result<MapEntry, LowerError> {
 fn lower_match_arm(arm: SyntaxMatchArm) -> Result<MatchArm, LowerError> {
     Ok(MatchArm {
         pattern: EnumPattern {
+            variant_id: None,
+            binding_local: None,
             enum_name: arm.pattern.enum_name,
             enum_name_span: arm.pattern.enum_name_span,
             variant: arm.pattern.variant,
@@ -743,6 +1167,7 @@ fn lower_struct_field_value(field: SyntaxField) -> Result<StructFieldValue, Lowe
         });
     };
     Ok(StructFieldValue {
+        field_id: None,
         name: field.name,
         name_span: field.name_span,
         value: lower_expression(value)?,
@@ -781,6 +1206,7 @@ fn lower_string_parts(value: &str, span: Span) -> Result<Vec<StringPart>, LowerE
                     ));
                 }
                 parts.push(StringPart::Variable {
+                    local: None,
                     name: name.to_owned(),
                     // span 的起点包含字符串开头的双引号，因此插值名称再偏移一个字节。
                     span: Span::new(span.start + name_start + 1, span.start + name_end + 1),
@@ -820,4 +1246,32 @@ fn is_identifier(value: &str) -> bool {
         && bytes[1..]
             .iter()
             .all(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'))
+}
+
+#[cfg(test)]
+mod tests {
+    use yan_syntax::{lex, parse};
+
+    use super::{lower, Expression, Statement, StringPart};
+
+    #[test]
+    fn resolves_string_interpolation_to_its_local_id() {
+        let source = "fn main() -> string { let title = \"Yan\" \"{title}\" }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+
+        let Statement::Expression(Expression::String { parts, .. }) = program.functions[0]
+            .statements
+            .last()
+            .expect("main 必须包含尾表达式")
+        else {
+            panic!("尾表达式必须是字符串插值");
+        };
+
+        assert!(matches!(
+            parts.as_slice(),
+            [StringPart::Variable { local: Some(_), name, .. }] if name == "title"
+        ));
+    }
 }

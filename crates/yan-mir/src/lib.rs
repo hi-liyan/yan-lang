@@ -3,11 +3,9 @@
 //! M14 的首个切片先建立 MIR 程序、函数和基本块的稳定数据边界。后续提交会在不增加
 //! Yan 表面语法的前提下，把 Typed HIR 中的表达式和控制流逐步降低为指令与终结指令。
 
-use std::collections::HashMap;
-
-use yan_hir::{Expression, Statement as HirStatement, Type};
+use yan_hir::{DefId, Type};
 use yan_source::Span;
-use yan_typeck::{DefId, TypedProgram};
+use yan_typeck::{TypedExpression, TypedFunction, TypedProgram, TypedStatement};
 
 /// MIR 程序。
 ///
@@ -87,17 +85,17 @@ pub enum Statement {
     /// 初始化一个局部位置。
     Declare {
         local: LocalId,
-        value: Expression,
+        value: TypedExpression,
         span: Span,
     },
     /// 覆盖一个已类型检查为可变的局部位置。
     Assign {
         local: LocalId,
-        value: Expression,
+        value: TypedExpression,
         span: Span,
     },
     /// 为副作用执行非尾表达式。
-    Evaluate { value: Expression, span: Span },
+    Evaluate { value: TypedExpression, span: Span },
 }
 
 /// MIR 基本块终结指令。
@@ -105,11 +103,9 @@ pub enum Statement {
 pub enum Terminator {
     /// 返回尾表达式；无值表示 unit。
     Return {
-        value: Option<Expression>,
+        value: Option<TypedExpression>,
         span: Span,
     },
-    /// if、match、for、return 或 `?` 需要后续 CFG lowering。
-    PendingControlFlow { span: Span },
 }
 
 /// 将已类型化 HIR 建立为最小 MIR 控制流图。
@@ -117,107 +113,83 @@ pub enum Terminator {
 /// 顺序函数体会进入一个入口基本块；嵌套控制流保持显式 pending，不能被后端执行。
 pub fn lower(typed: TypedProgram) -> Program {
     let functions = typed
-        .program()
         .functions
         .iter()
-        .enumerate()
-        .map(|(index, function)| lower_function(typed.functions()[index].id, function, &typed))
+        .map(lower_function)
         .collect();
     Program { typed, functions }
 }
 
-/// 将函数的参数、局部声明和顺序语句 lowering 到 MIR 入口块。
-fn lower_function(id: DefId, function: &yan_hir::Function, typed: &TypedProgram) -> Function {
-    let mut locals = Vec::new();
-    let mut names = HashMap::new();
-    for parameter in &function.parameters {
-        let id = LocalId(locals.len() as u32);
-        locals.push(Local {
-            id,
+/// 为每个 Typed HIR 函数建立独立的 MIR 控制流图入口。
+fn lower_function(function: &TypedFunction) -> Function {
+    let mut locals = function
+        .parameters
+        .iter()
+        .map(|parameter| Local {
+            id: LocalId(parameter.id.0),
             ty: parameter.ty.clone(),
-            mutable: false,
-            span: parameter.name_span,
-        });
-        names.insert(parameter.name.as_str(), id);
-    }
+            mutable: parameter.mutable,
+            span: parameter.span,
+        })
+        .collect::<Vec<_>>();
     let mut statements = Vec::new();
     let mut terminator = Terminator::Return {
         value: None,
-        span: function.name_span,
+        span: function.span,
     };
     for (index, statement) in function.statements.iter().enumerate() {
         let is_tail = index + 1 == function.statements.len();
-        let value = match statement {
-            HirStatement::Let { value, .. }
-            | HirStatement::Assign { value, .. }
-            | HirStatement::Expression(value)
-            | HirStatement::Destructure { value, .. } => value,
-        };
-        if requires_cfg(value) || matches!(statement, HirStatement::Destructure { .. }) {
-            terminator = Terminator::PendingControlFlow { span: value.span() };
-            break;
-        }
         match statement {
-            HirStatement::Let {
-                mutable,
-                name,
-                name_span,
-                value,
-                ..
-            } => {
-                let id = LocalId(locals.len() as u32);
-                // 成功类型检查必须为 let 初始值创建类型条目，否则为内部不变量损坏。
-                let ty = typed
-                    .expression_type(value.span())
-                    .expect("checked let initializer must have a typed expression entry")
-                    .clone();
+            TypedStatement::Let { local, value } => {
+                let id = LocalId(local.id.0);
                 locals.push(Local {
                     id,
-                    ty,
-                    mutable: *mutable,
-                    span: *name_span,
+                    ty: local.ty.clone(),
+                    mutable: local.mutable,
+                    span: local.span,
                 });
-                names.insert(name.as_str(), id);
                 statements.push(Statement::Declare {
                     local: id,
                     value: value.clone(),
-                    span: *name_span,
+                    span: local.span,
                 });
             }
-            HirStatement::Assign {
-                name,
-                name_span,
-                value,
-            } => {
-                // 类型检查已经确认赋值目标存在且可变。
-                let local = *names
-                    .get(name.as_str())
-                    .expect("checked assignment must resolve to a local MIR position");
-                statements.push(Statement::Assign {
-                    local,
+            TypedStatement::Assign { local, value, span } => statements.push(Statement::Assign {
+                local: LocalId(local.0),
+                value: value.clone(),
+                span: *span,
+            }),
+            TypedStatement::Destructure { locals: bindings, value } => {
+                for local in bindings {
+                    let id = LocalId(local.id.0);
+                    locals.push(Local {
+                        id,
+                        ty: local.ty.clone(),
+                        mutable: false,
+                        span: local.span,
+                    });
+                }
+                statements.push(Statement::Evaluate {
                     value: value.clone(),
-                    span: *name_span,
+                    span: value.span,
                 });
             }
-            HirStatement::Expression(value) if is_tail => {
+            TypedStatement::Expression(value) if is_tail => {
                 terminator = Terminator::Return {
                     value: Some(value.clone()),
-                    span: value.span(),
+                    span: value.span,
                 };
             }
-            HirStatement::Expression(value) => statements.push(Statement::Evaluate {
+            TypedStatement::Expression(value) => statements.push(Statement::Evaluate {
                 value: value.clone(),
-                span: value.span(),
+                span: value.span,
             }),
-            HirStatement::Destructure { .. } => {
-                unreachable!("destructuring was handled as pending CFG")
-            }
         }
     }
     Function {
-        id: FunctionId(id),
+        id: FunctionId(function.id),
         name: function.name.clone(),
-        span: function.name_span,
+        span: function.span,
         return_type: function.return_type.clone(),
         locals,
         blocks: vec![BasicBlock {
@@ -228,26 +200,13 @@ fn lower_function(id: DefId, function: &yan_hir::Function, typed: &TypedProgram)
     }
 }
 
-/// 返回必须拆分为多个基本块的表达式类别。
-fn requires_cfg(expression: &Expression) -> bool {
-    matches!(
-        expression,
-        Expression::If { .. }
-            | Expression::Match { .. }
-            | Expression::For { .. }
-            | Expression::Return { .. }
-            | Expression::Try { .. }
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use yan_hir::lower as lower_hir;
+    use yan_hir::{lower as lower_hir, DefId};
     use yan_syntax::{lex, parse};
     use yan_typeck::check;
 
     use super::{lower, BasicBlockId, FunctionId, Statement, Terminator};
-    use yan_typeck::DefId;
 
     #[test]
     fn lowers_sequential_bindings_into_locals_and_return() {

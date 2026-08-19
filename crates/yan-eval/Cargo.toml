@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 yan-hir = { path = "../yan-hir" }
+yan-mir = { path = "../yan-mir" }
 yan-source = { path = "../yan-source" }
 yan-typeck = { path = "../yan-typeck" }
 

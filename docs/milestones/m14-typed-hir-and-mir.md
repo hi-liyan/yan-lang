@@ -11,6 +11,7 @@
 
 ## 验收标准
 
+- `yan-source` 为每个参与编译会话的源文件建立稳定 `SourceId` 与只读源文件表；跨文件诊断以 `SourceLocation { SourceId, Span }` 定位到原始文件，`Span` 继续保持文件内字节区间。
 - `yan-hir` 为模块、顶层声明、局部绑定、字段与 enum variant 建立稳定的编译会话内 ID；变量读取、调用、字段访问和模式不再由后续阶段以裸 `String` 重新查找。
 - `yan-typeck` 对成功程序返回 `TypedProgram`；失败仍返回带 `Span` 的稳定 Yan 诊断。
 - Typed HIR 为每个值表达式记录确定 Yan 类型，并保留函数调用、构造、字段、模式、赋值、`return`、`?`、if、match 与 for 的已验证语义目标。

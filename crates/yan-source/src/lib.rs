@@ -2,6 +2,57 @@
 
 use std::path::{Path, PathBuf};
 
+/// 源文件在单次编译会话内的稳定标识。
+///
+/// 该标识只关联同一 [`SourceMap`] 中的不可变文件，不能序列化为跨会话缓存键。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceId(pub u32);
+
+/// 由源文件标识与字节区间构成的完整诊断位置。
+///
+/// 跨文件编译阶段必须传递本类型，避免把某个文件的 [`Span`] 错误映射到入口文件。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceLocation {
+    /// 位置所属的编译会话源文件。
+    pub source: SourceId,
+    /// 该文件内的半开字节区间。
+    pub span: Span,
+}
+
+impl SourceLocation {
+    /// 使用文件标识和字节区间构造完整位置。
+    pub const fn new(source: SourceId, span: Span) -> Self {
+        Self { source, span }
+    }
+}
+
+/// 单次编译会话参与文件的只读索引表。
+///
+/// 文件读取仍由 CLI 完成；本类型只为已读取文件分配稳定 ID 并提供诊断查找。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    /// 创建空的编译会话源文件表。
+    pub const fn new() -> Self {
+        Self { files: Vec::new() }
+    }
+
+    /// 插入已读取源文件并返回其稳定会话 ID。
+    pub fn insert(&mut self, file: SourceFile) -> SourceId {
+        let id = SourceId(self.files.len() as u32);
+        self.files.push(file);
+        id
+    }
+
+    /// 返回指定会话源文件；未知 ID 返回 `None` 供调用方报告内部不变量错误。
+    pub fn get(&self, id: SourceId) -> Option<&SourceFile> {
+        self.files.get(id.0 as usize)
+    }
+}
+
 /// 源文件中的半开字节区间 `[start, end)`。
 ///
 /// 编译器内部统一以 UTF-8 字节偏移保存位置，避免 lexer、parser 和诊断层各自维护
@@ -74,7 +125,7 @@ impl SourceFile {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceFile;
+    use super::{SourceFile, SourceLocation, SourceMap, Span};
 
     #[test]
     fn calculates_utf8_line_and_column() {
@@ -83,5 +134,17 @@ mod tests {
         assert_eq!(source.line_column(0), Some((1, 1)));
         assert_eq!(source.line_column(17), Some((2, 1)));
         assert_eq!(source.line_column(20), Some((2, 2)));
+    }
+
+    #[test]
+    fn resolves_identical_spans_to_their_own_session_source_files() {
+        let mut sources = SourceMap::new();
+        let first = sources.insert(SourceFile::new("first.yan", "let value = 1"));
+        let second = sources.insert(SourceFile::new("second.yan", "let value = 2"));
+
+        let location = SourceLocation::new(second, Span::new(4, 9));
+
+        assert_eq!(sources.get(location.source).map(SourceFile::path), Some(std::path::Path::new("second.yan")));
+        assert_ne!(first, second);
     }
 }

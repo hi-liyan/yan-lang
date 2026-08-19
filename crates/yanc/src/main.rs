@@ -50,7 +50,7 @@ fn run_command(path: &Path) -> ExitCode {
         Err(diagnostic) => return render_diagnostic(&diagnostic),
     };
 
-    match execute(&compiled.typed) {
+    match execute(&compiled.mir) {
         Ok(lines) => {
             for line in lines {
                 println!("{line}");
@@ -102,10 +102,11 @@ fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnosti
     })?;
     // M14 先建立从 Typed HIR 到 MIR 的编译边界。当前解释器仍在下一子阶段迁移，
     // 因此这里只验证 MIR lowering 能覆盖已通过类型检查的每个函数。
-    let _mir = lower_mir(typed.clone());
+    let mir = lower_mir(typed.clone());
     Ok(CompiledProgram {
         source: entry.source,
         typed,
+        mir,
     })
 }
 
@@ -340,6 +341,7 @@ fn import_error(module: &ModuleFile, span: Span, message: impl Into<String>) -> 
 struct CompiledProgram {
     source: SourceFile,
     typed: TypedProgram,
+    mir: yan_mir::Program,
 }
 
 #[derive(Debug)]
@@ -380,13 +382,11 @@ mod tests {
         let compiled = compile(&path, true).expect("模块示例应完成链接与类型检查");
         assert!(compiled
             .typed
-            .program()
             .structs
             .iter()
             .any(|structure| structure.name == "Task"));
         assert!(compiled
             .typed
-            .program()
             .functions
             .iter()
             .any(|function| function.name == "rename_task"));
@@ -423,6 +423,7 @@ mod tests {
             &module,
             "Task",
             &mut Program {
+                id: yan_hir::ModuleId(0),
                 module: None,
                 imports: Vec::new(),
                 newtypes: Vec::new(),

@@ -20,6 +20,8 @@ Syntax AST -> resolved HIR -> Typed HIR -> verified MIR -> MIR interpreter
 
 `yan-hir` owns compiler-session IDs and resolved targets. `yan-typeck` owns complete typed nodes and never exposes an execution path over untyped HIR. `yan-mir` owns CFG lowering and validation. `yan-eval` owns only MIR execution. `yanc` reads files, links modules, invokes each stage, and renders existing diagnostics.
 
+`yan-source` owns `SourceId`, `SourceLocation`, and the immutable source-file table for one compilation session. Every diagnostic-bearing HIR, Typed HIR, MIR, verifier, and runtime location uses `SourceLocation { source, span }`; `Span` remains a lightweight file-local byte interval for lexer and parser operations.
+
 ## Resolved HIR
 
 Every module, top-level definition, source local, field, and enum variant has a stable ID for one compilation session. Reads, assignments, calls, struct construction, field access, enum construction, and match patterns refer to that ID. Names may remain as diagnostic metadata, but no semantic consumer may resolve them again.
