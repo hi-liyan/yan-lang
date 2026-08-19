@@ -2,8 +2,8 @@
 
 use yan_source::Span;
 use yan_syntax::{
-    Expression as SyntaxExpression, Field as SyntaxField, Statement as SyntaxStatement,
-    SyntaxProgram, TypeSyntax,
+    Expression as SyntaxExpression, Field as SyntaxField, MapEntry as SyntaxMapEntry,
+    Statement as SyntaxStatement, SyntaxProgram, TypeSyntax,
 };
 
 /// 已降低为编译器语义阶段使用的程序。
@@ -99,6 +99,8 @@ pub enum Type {
     Unit,
     /// 元素类型统一的有序列表。
     List(Box<Type>),
+    /// 键固定为 string、值类型统一的不可变 map。
+    Map(Box<Type>),
     /// 由源文件声明的名义类型，包括新类型和结构体。
     Named(String),
 }
@@ -137,6 +139,8 @@ pub enum Expression {
     String { parts: Vec<StringPart>, span: Span },
     /// 列表字面量。
     List { values: Vec<Expression>, span: Span },
+    /// 键为 string 的 map 字面量。
+    Map { entries: Vec<MapEntry>, span: Span },
     /// 局部变量读取。
     Variable { name: String, span: Span },
     /// 平台或后续普通函数调用。
@@ -188,6 +192,7 @@ impl Expression {
             | Self::Boolean { span, .. }
             | Self::String { span, .. }
             | Self::List { span, .. }
+            | Self::Map { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -196,6 +201,17 @@ impl Expression {
             Self::StructLiteral { span, .. } | Self::FieldAccess { span, .. } => *span,
         }
     }
+}
+
+/// HIR map 字面量中的一个字符串键值对。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MapEntry {
+    /// 不含双引号的键文本。
+    pub key: String,
+    /// 键字符串字面量在源文件中的位置。
+    pub key_span: Span,
+    /// 与键关联的值表达式。
+    pub value: Expression,
 }
 
 /// 结构体字面量中的一个具名字段赋值。
@@ -326,6 +342,9 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
         ("string", []) => Ok(Type::String),
         ("unit", []) => Ok(Type::Unit),
         ("list", [element]) => Ok(Type::List(Box::new(lower_type(element.clone())?))),
+        ("map", [key, value]) if key.name == "string" && key.arguments.is_empty() => {
+            Ok(Type::Map(Box::new(lower_type(value.clone())?)))
+        }
         (name, []) => Ok(Type::Named(name.to_owned())),
         _ => Err(unsupported()),
     }
@@ -374,6 +393,13 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             values: values
                 .into_iter()
                 .map(lower_expression)
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        },
+        SyntaxExpression::Map { entries, span } => Expression::Map {
+            entries: entries
+                .into_iter()
+                .map(lower_map_entry)
                 .collect::<Result<Vec<_>, _>>()?,
             span,
         },
@@ -430,6 +456,14 @@ fn lower_expression(expression: SyntaxExpression) -> Result<Expression, LowerErr
             field_span,
             span,
         },
+    })
+}
+
+fn lower_map_entry(entry: SyntaxMapEntry) -> Result<MapEntry, LowerError> {
+    Ok(MapEntry {
+        key: entry.key,
+        key_span: entry.key_span,
+        value: lower_expression(entry.value)?,
     })
 }
 

@@ -43,6 +43,7 @@ enum Value {
     Boolean(bool),
     String(String),
     List(Vec<Value>),
+    Map(Vec<(String, Value)>),
     Newtype(String, Box<Value>),
     Struct {
         name: String,
@@ -66,6 +67,14 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("[{rendered}]")
+            }
+            Self::Map(entries) => {
+                let rendered = entries
+                    .iter()
+                    .map(|(key, value)| format!("\"{key}\": {}", value.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{rendered}}}")
             }
             Self::Newtype(_, value) => value.display(),
             Self::Struct { name, .. } => name.clone(),
@@ -155,6 +164,16 @@ fn evaluate(
             .map(|value| evaluate(value, program, bindings, output))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::List),
+        Expression::Map { entries, .. } => entries
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.key.clone(),
+                    evaluate(&entry.value, program, bindings, output)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, EvalError>>()
+            .map(Value::Map),
         Expression::Variable { name, span } => bindings
             .get(name)
             .cloned()
@@ -386,6 +405,20 @@ mod tests {
         assert_eq!(
             execute(&program).expect("测试源码应能执行"),
             vec!["total: 6"]
+        );
+    }
+
+    #[test]
+    fn executes_map_literal_and_displays_entries_in_source_order() {
+        let source = "import yan.platform.console fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } console.println(ports) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        assert_eq!(
+            execute(&program).expect("测试源码应能执行"),
+            vec!["{\"http\": 80, \"https\": 443}"]
         );
     }
 }

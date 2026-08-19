@@ -130,6 +130,17 @@ pub struct Field {
     pub value: Option<Expression>,
 }
 
+/// map 字面量中的一个字符串键值对。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MapEntry {
+    /// 不含双引号的键文本。
+    pub key: String,
+    /// 键字符串字面量在源文件中的位置。
+    pub key_span: Span,
+    /// 与键关联的值表达式。
+    pub value: Expression,
+}
+
 /// 用点分隔的模块路径。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModulePath {
@@ -217,6 +228,8 @@ pub enum Expression {
     String { value: String, span: Span },
     /// 有序列表字面量。
     List { values: Vec<Expression>, span: Span },
+    /// 键为字符串的 map 字面量。
+    Map { entries: Vec<MapEntry>, span: Span },
     /// 局部变量引用。
     Variable { name: String, span: Span },
     /// 以模块式名称调用的函数，例如 `console.println(value)`。
@@ -268,6 +281,7 @@ impl Expression {
             | Self::Boolean { span, .. }
             | Self::String { span, .. }
             | Self::List { span, .. }
+            | Self::Map { span, .. }
             | Self::Variable { span, .. }
             | Self::Call { span, .. }
             | Self::Add { span, .. }
@@ -674,6 +688,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 })
             }
             TokenKind::LeftBracket => self.parse_list(),
+            TokenKind::LeftBrace => self.parse_map(),
             TokenKind::Identifier => self.parse_identifier_expression(),
             _ => Err(ParseError {
                 span: token.span,
@@ -694,6 +709,29 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let closing = self.consume_kind(TokenKind::RightBracket, "`]`")?;
         Ok(Expression::List {
             values,
+            span: Span::new(opening.span.start, closing.span.end),
+        })
+    }
+
+    fn parse_map(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.consume_kind(TokenKind::LeftBrace, "`{`")?;
+        let mut entries = Vec::new();
+        while !self.at_end() && !self.at_kind(TokenKind::RightBrace) {
+            let key = self.consume_kind(TokenKind::String, "a string map key")?;
+            let text = self.text_for(&key);
+            let key_text = text[1..text.len() - 1].to_owned();
+            self.consume_kind(TokenKind::Colon, "`:`")?;
+            let value = self.parse_expression()?;
+            entries.push(MapEntry {
+                key: key_text,
+                key_span: key.span,
+                value,
+            });
+            self.consume_if(TokenKind::Comma);
+        }
+        let closing = self.consume_kind(TokenKind::RightBrace, "`}`")?;
+        Ok(Expression::Map {
+            entries,
             span: Span::new(opening.span.start, closing.span.end),
         })
     }
@@ -917,5 +955,21 @@ mod tests {
 
         assert_eq!(error.span.start, 0);
         assert_eq!(error.message, "unterminated string literal");
+    }
+
+    #[test]
+    fn parses_string_keyed_map_literal() {
+        let source =
+            "fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
+
+        assert!(matches!(
+            &program.functions[0].statements[0],
+            Statement::Let {
+                value: Expression::Map { entries, .. },
+                ..
+            } if entries.len() == 2
+        ));
     }
 }

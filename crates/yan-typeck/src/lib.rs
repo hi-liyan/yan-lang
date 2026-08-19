@@ -98,7 +98,9 @@ fn check_declared_type(
     span: Span,
 ) -> Result<(), TypeError> {
     match ty {
-        Type::List(element) => check_declared_type(element, declarations, span),
+        Type::List(element) | Type::Map(element) => {
+            check_declared_type(element, declarations, span)
+        }
         Type::Named(name)
             if !declarations.newtypes.contains_key(name)
                 && !declarations.structs.contains_key(name) =>
@@ -189,6 +191,10 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
             calls
         }
         Expression::List { values, .. } => values.iter().flat_map(expression_calls).collect(),
+        Expression::Map { entries, .. } => entries
+            .iter()
+            .flat_map(|entry| expression_calls(&entry.value))
+            .collect(),
         Expression::StructLiteral { fields, .. } => fields
             .iter()
             .flat_map(|field| expression_calls(&field.value))
@@ -463,6 +469,37 @@ fn type_of(
                 }
             }
             Ok(Type::List(Box::new(element_type)))
+        }
+        Expression::Map { entries, span } => {
+            let Some((first, rest)) = entries.split_first() else {
+                return Err(error(
+                    *span,
+                    "map literals require at least one entry to infer their value type",
+                ));
+            };
+            let value_type = type_of(
+                &first.value,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            for entry in rest {
+                if type_of(
+                    &entry.value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                )? != value_type
+                {
+                    return Err(error(
+                        entry.value.span(),
+                        "map values must have the same type",
+                    ));
+                }
+            }
+            Ok(Type::Map(Box::new(value_type)))
         }
         Expression::Add { left, right, span } | Expression::Multiply { left, right, span } => {
             let left_type = type_of(left, bindings, signatures, declarations, console_imported)?;
@@ -798,5 +835,21 @@ mod tests {
 
         let error = check_source(source).expect_err("未知结构体字段必须失败");
         assert!(error.message.contains("has no field"));
+    }
+
+    #[test]
+    fn checks_string_keyed_map_values() {
+        let source =
+            "fn main() -> unit { let ports: map<string, int> = { \"http\": 80 \"https\": 443 } }";
+
+        check_source(source).expect("字符串键且值类型一致的 map 应通过类型检查");
+    }
+
+    #[test]
+    fn rejects_map_with_mixed_value_types() {
+        let source = "fn main() -> unit { let ports = { \"http\": 80 \"name\": \"http\" } }";
+
+        let error = check_source(source).expect_err("不同值类型的 map 必须失败");
+        assert_eq!(error.message, "map values must have the same type");
     }
 }
