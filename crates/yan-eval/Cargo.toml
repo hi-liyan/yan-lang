@@ -7,10 +7,10 @@ license.workspace = true
 [dependencies]
 yan-hir = { path = "../yan-hir" }
 yan-source = { path = "../yan-source" }
+yan-typeck = { path = "../yan-typeck" }
 
 [dev-dependencies]
 yan-syntax = { path = "../yan-syntax" }
-yan-typeck = { path = "../yan-typeck" }
 
 [lints]
 workspace = true

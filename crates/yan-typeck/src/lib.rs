@@ -14,19 +14,114 @@ pub struct TypeError {
     pub message: String,
 }
 
+/// 已完成名称、类型与控制流验证的 Yan 程序。
+///
+/// 该类型是类型检查阶段成功时唯一的输出边界。它持有不可变 HIR，后续 MIR lowering
+/// 和解释执行只能消费本类型，避免绕过类型检查重新使用原始程序。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedProgram {
+    program: Program,
+    expression_types: Vec<TypedExpression>,
+    functions: Vec<TypedFunction>,
+    references: Vec<ResolvedReference>,
+}
+
+impl TypedProgram {
+    /// 返回已通过类型检查的后端无关 HIR。
+    ///
+    /// 调用方不得修改返回值；所有能执行或生成目标代码的后续阶段必须以此为输入。
+    pub const fn program(&self) -> &Program {
+        &self.program
+    }
+
+    /// 返回每个值表达式在类型检查后确定的 Yan 类型。
+    ///
+    /// 条目按源码求值遍历顺序排列。span 仅用于关联诊断与调试信息，不能作为跨编译会话
+    /// 的标识符。
+    pub fn expression_types(&self) -> &[TypedExpression] {
+        &self.expression_types
+    }
+
+    /// 查找给定表达式位置对应的已验证 Yan 类型。
+    ///
+    /// `None` 这类只能由父表达式上下文推断的构造没有独立条目。
+    pub fn expression_type(&self, span: Span) -> Option<&Type> {
+        self.expression_types
+            .iter()
+            .find(|expression| expression.span == span)
+            .map(|expression| &expression.ty)
+    }
+
+    /// 返回按源声明顺序建立的顶层函数定义表。
+    pub fn functions(&self) -> &[TypedFunction] {
+        &self.functions
+    }
+
+    /// 返回已解析的顺序局部引用与普通函数调用。
+    pub fn references(&self) -> &[ResolvedReference] {
+        &self.references
+    }
+}
+
+/// 顶层函数在已类型化程序中的稳定编译会话内标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DefId(pub u32);
+
+/// 局部绑定在所属函数中的稳定编译会话内标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ResolvedLocalId(pub u32);
+
+/// 一个已解析引用的目标。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolvedTarget {
+    /// 当前函数的局部绑定。
+    Local(ResolvedLocalId),
+    /// 顶层普通函数。
+    Function(DefId),
+}
+
+/// 一个源码引用与其已解析目标。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedReference {
+    /// 引用的源码位置。
+    pub span: Span,
+    /// 已解析目标。
+    pub target: ResolvedTarget,
+}
+
+/// 一个已解析的顶层函数定义。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedFunction {
+    /// 后续 MIR、解释器和后端用于关联此函数的稳定标识。
+    pub id: DefId,
+    /// 仅供诊断和调试显示的源函数名称。
+    pub name: String,
+    /// 函数名称在源文件中的位置。
+    pub span: Span,
+}
+
+/// 一个值表达式及其已经验证的 Yan 类型。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedExpression {
+    /// 表达式在源文件中的位置。
+    pub span: Span,
+    /// 表达式求值产生的 Yan 类型。
+    pub ty: Type,
+}
+
 /// 验证 M3 程序是否满足函数、类型与平台调用边界。
-pub fn check(program: &Program) -> Result<(), TypeError> {
+pub fn check(program: &Program) -> Result<TypedProgram, TypeError> {
     check_program(program, true)
 }
 
 /// 验证不包含入口函数的库模块。
 ///
 /// 库模块与可执行模块使用相同的声明、调用和类型规则，但不要求定义 `main`。
-pub fn check_library(program: &Program) -> Result<(), TypeError> {
+pub fn check_library(program: &Program) -> Result<TypedProgram, TypeError> {
     check_program(program, false)
 }
 
-fn check_program(program: &Program, require_main: bool) -> Result<(), TypeError> {
+fn check_program(program: &Program, require_main: bool) -> Result<TypedProgram, TypeError> {
     let console_imported = check_imports(program)?;
     let signatures = collect_signatures(program, require_main)?;
     let declarations = collect_declarations(program)?;
@@ -34,7 +129,518 @@ fn check_program(program: &Program, require_main: bool) -> Result<(), TypeError>
     for function in &program.functions {
         check_function(function, &signatures, &declarations, console_imported)?;
     }
+    let expression_types =
+        collect_expression_types(program, &signatures, &declarations, console_imported)?;
+    let functions = program
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| TypedFunction {
+            id: DefId(index as u32),
+            name: function.name.clone(),
+            span: function.name_span,
+        })
+        .collect::<Vec<TypedFunction>>();
+    let references = collect_sequential_references(program, &functions);
+    Ok(TypedProgram {
+        program: program.clone(),
+        expression_types,
+        functions,
+        references,
+    })
+}
+
+/// 收集函数顶层顺序语句的名称解析结果。
+fn collect_sequential_references(
+    program: &Program,
+    functions: &[TypedFunction],
+) -> Vec<ResolvedReference> {
+    let definitions = functions
+        .iter()
+        .map(|function| (function.name.as_str(), function.id))
+        .collect::<HashMap<_, _>>();
+    let mut references = Vec::new();
+    for function in &program.functions {
+        let mut locals = HashMap::new();
+        let mut next = 0_u32;
+        for parameter in &function.parameters {
+            locals.insert(parameter.name.as_str(), ResolvedLocalId(next));
+            next += 1;
+        }
+        for statement in &function.statements {
+            match statement {
+                Statement::Let { name, value, .. } => {
+                    collect_direct_references(value, &locals, &definitions, &mut references);
+                    locals.insert(name.as_str(), ResolvedLocalId(next));
+                    next += 1;
+                }
+                Statement::Assign {
+                    name,
+                    name_span,
+                    value,
+                } => {
+                    if let Some(local) = locals.get(name.as_str()) {
+                        references.push(ResolvedReference {
+                            span: *name_span,
+                            target: ResolvedTarget::Local(*local),
+                        });
+                    }
+                    collect_direct_references(value, &locals, &definitions, &mut references);
+                }
+                Statement::Expression(value) | Statement::Destructure { value, .. } => {
+                    collect_direct_references(value, &locals, &definitions, &mut references);
+                }
+            }
+        }
+    }
+    references
+}
+
+/// 记录一个顺序表达式直接包含的变量读取与普通函数调用。
+fn collect_direct_references(
+    expression: &Expression,
+    locals: &HashMap<&str, ResolvedLocalId>,
+    functions: &HashMap<&str, DefId>,
+    references: &mut Vec<ResolvedReference>,
+) {
+    match expression {
+        Expression::Variable { name, span } => {
+            if let Some(local) = locals.get(name.as_str()) {
+                references.push(ResolvedReference {
+                    span: *span,
+                    target: ResolvedTarget::Local(*local),
+                });
+            }
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
+        } => {
+            if let [name] = path.as_slice() {
+                if let Some(function) = functions.get(name.as_str()) {
+                    references.push(ResolvedReference {
+                        span: *span,
+                        target: ResolvedTarget::Function(*function),
+                    });
+                }
+            }
+            for argument in arguments {
+                collect_direct_references(argument, locals, functions, references);
+            }
+        }
+        Expression::Add { left, right, .. }
+        | Expression::Multiply { left, right, .. }
+        | Expression::Equal { left, right, .. } => {
+            collect_direct_references(left, locals, functions, references);
+            collect_direct_references(right, locals, functions, references);
+        }
+        Expression::Return { value, .. }
+        | Expression::Try { value, .. }
+        | Expression::FieldAccess { target: value, .. } => {
+            collect_direct_references(value, locals, functions, references)
+        }
+        Expression::List { values, .. } | Expression::Tuple { values, .. } => {
+            for value in values {
+                collect_direct_references(value, locals, functions, references);
+            }
+        }
+        Expression::Map { entries, .. } => {
+            for entry in entries {
+                collect_direct_references(&entry.value, locals, functions, references);
+            }
+        }
+        Expression::StructLiteral { fields, .. } => {
+            for field in fields {
+                collect_direct_references(&field.value, locals, functions, references);
+            }
+        }
+        Expression::Integer { .. }
+        | Expression::Float { .. }
+        | Expression::Boolean { .. }
+        | Expression::String { .. }
+        | Expression::Match { .. }
+        | Expression::If { .. }
+        | Expression::For { .. } => {}
+    }
+}
+
+/// 在既有类型检查成功后，以相同作用域规则记录每个值表达式的确定类型。
+///
+/// 此处不产生新的类型结论；每次记录仍调用 `type_of`，因此若前一阶段的规则与记录过程
+/// 不一致会立刻作为内部检查错误暴露，而不会向 MIR 暴露未验证表达式。
+fn collect_expression_types(
+    program: &Program,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Vec<TypedExpression>, TypeError> {
+    let mut entries = Vec::new();
+    for structure in &program.structs {
+        for field in &structure.fields {
+            if let Some(default) = &field.default {
+                record_expression(
+                    default,
+                    &HashMap::new(),
+                    signatures,
+                    declarations,
+                    console_imported,
+                    &mut entries,
+                )?;
+            }
+        }
+    }
+    for function in &program.functions {
+        let mut bindings = HashMap::new();
+        for parameter in &function.parameters {
+            bindings.insert(
+                parameter.name.clone(),
+                Binding {
+                    ty: parameter.ty.clone(),
+                    mutable: false,
+                },
+            );
+        }
+        record_statements(
+            &function.statements,
+            &mut bindings,
+            signatures,
+            declarations,
+            console_imported,
+            &mut entries,
+        )?;
+    }
+    Ok(entries)
+}
+
+/// 按源码顺序记录语句中的表达式，并同步更新局部绑定环境。
+fn record_statements(
+    statements: &[Statement],
+    bindings: &mut HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+    entries: &mut Vec<TypedExpression>,
+) -> Result<(), TypeError> {
+    for statement in statements {
+        match statement {
+            Statement::Destructure { names, value } => {
+                record_expression(
+                    value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+                let Type::Tuple(elements) =
+                    type_of(value, bindings, signatures, declarations, console_imported)?
+                else {
+                    return Err(error(
+                        value.span(),
+                        "type-checked destructuring requires a tuple value",
+                    ));
+                };
+                for ((name, _), ty) in names.iter().zip(elements) {
+                    bindings.insert(name.clone(), Binding { ty, mutable: false });
+                }
+            }
+            Statement::Let {
+                mutable,
+                name,
+                value,
+                ..
+            } => {
+                record_expression(
+                    value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+                let ty = type_of(value, bindings, signatures, declarations, console_imported)?;
+                bindings.insert(
+                    name.clone(),
+                    Binding {
+                        ty,
+                        mutable: *mutable,
+                    },
+                );
+            }
+            Statement::Assign { value, .. } | Statement::Expression(value) => record_expression(
+                value,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?,
+        }
+    }
     Ok(())
+}
+
+/// 记录一个表达式及其子表达式的类型，并为嵌套块建立独立的局部作用域。
+fn record_expression(
+    expression: &Expression,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+    entries: &mut Vec<TypedExpression>,
+) -> Result<(), TypeError> {
+    // `None` 没有独立类型，只能由函数参数等 Option 上下文推断；父表达式已记录该结论。
+    if matches!(expression, Expression::Variable { name, .. } if name == "None") {
+        return Ok(());
+    }
+    let ty = type_of(
+        expression,
+        bindings,
+        signatures,
+        declarations,
+        console_imported,
+    )?;
+    entries.push(TypedExpression {
+        span: expression.span(),
+        ty,
+    });
+    match expression {
+        Expression::List { values, .. } | Expression::Tuple { values, .. } => {
+            for value in values {
+                record_expression(
+                    value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+            }
+        }
+        Expression::Map { entries: map, .. } => {
+            for entry in map {
+                record_expression(
+                    &entry.value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+            }
+        }
+        Expression::Match { target, arms, .. } => {
+            record_expression(
+                target,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+            let target_type =
+                type_of(target, bindings, signatures, declarations, console_imported)?;
+            for arm in arms {
+                let mut arm_bindings = bindings.clone();
+                if let Some((name, _)) = &arm.pattern.binding {
+                    if let Some(ty) = match_binding_type(&target_type, &arm.pattern, declarations) {
+                        arm_bindings.insert(name.clone(), Binding { ty, mutable: false });
+                    }
+                }
+                record_expression(
+                    &arm.value,
+                    &arm_bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+            }
+        }
+        Expression::If {
+            condition,
+            then_statements,
+            else_statements,
+            ..
+        } => {
+            record_expression(
+                condition,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+            record_block(
+                then_statements,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+            record_block(
+                else_statements,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+        }
+        Expression::For {
+            name,
+            iterable,
+            statements,
+            ..
+        } => {
+            record_expression(
+                iterable,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+            let mut loop_bindings = bindings.clone();
+            if let Type::List(element) = type_of(
+                iterable,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )? {
+                loop_bindings.insert(
+                    name.clone(),
+                    Binding {
+                        ty: *element,
+                        mutable: false,
+                    },
+                );
+            }
+            record_block(
+                statements,
+                &loop_bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+        }
+        Expression::Return { value, .. } | Expression::Try { value, .. } => record_expression(
+            value,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+            entries,
+        )?,
+        Expression::FieldAccess { target, .. } if matches!(target.as_ref(), Expression::Variable { name, .. } if declarations.enums.contains_key(name)) =>
+            {}
+        Expression::FieldAccess { target, .. } => record_expression(
+            target,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+            entries,
+        )?,
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                record_expression(
+                    argument,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+            }
+        }
+        Expression::Add { left, right, .. }
+        | Expression::Multiply { left, right, .. }
+        | Expression::Equal { left, right, .. } => {
+            record_expression(
+                left,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+            record_expression(
+                right,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+                entries,
+            )?;
+        }
+        Expression::StructLiteral { fields, .. } => {
+            for field in fields {
+                record_expression(
+                    &field.value,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    entries,
+                )?;
+            }
+        }
+        Expression::Integer { .. }
+        | Expression::Float { .. }
+        | Expression::Boolean { .. }
+        | Expression::String { .. }
+        | Expression::Variable { .. } => {}
+    }
+    Ok(())
+}
+
+/// 记录嵌套块时克隆外层绑定，避免块内声明泄漏到父作用域。
+fn record_block(
+    statements: &[Statement],
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+    entries: &mut Vec<TypedExpression>,
+) -> Result<(), TypeError> {
+    let mut block_bindings = bindings.clone();
+    record_statements(
+        statements,
+        &mut block_bindings,
+        signatures,
+        declarations,
+        console_imported,
+        entries,
+    )
+}
+
+/// 返回 match 分支载荷在该分支内对应的局部绑定类型。
+fn match_binding_type(
+    target: &Type,
+    pattern: &yan_hir::EnumPattern,
+    declarations: &Declarations,
+) -> Option<Type> {
+    match target {
+        Type::Option(element) if pattern.variant == "Some" => Some((**element).clone()),
+        Type::Result(ok, _) if pattern.variant == "Ok" => Some((**ok).clone()),
+        Type::Result(_, error) if pattern.variant == "Err" => Some((**error).clone()),
+        Type::Named(name) => declarations
+            .enums
+            .get(name)
+            .and_then(|variants| {
+                variants
+                    .iter()
+                    .find(|variant| variant.name == pattern.variant)
+            })
+            .and_then(|variant| variant.payload.as_ref())
+            .map(|payload| payload.ty.clone()),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1529,7 +2135,7 @@ fn error(span: Span, message: impl Into<String>) -> TypeError {
 
 #[cfg(test)]
 mod tests {
-    use yan_hir::lower;
+    use yan_hir::{lower, Type};
     use yan_syntax::{lex, parse};
 
     use super::{check, check_library};
@@ -1538,7 +2144,7 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program)
+        check(&program).map(|_| ())
     }
 
     #[test]
@@ -1546,6 +2152,25 @@ mod tests {
         let source = "import yan.platform.console fn twice(value: int) -> int { value * 2 } fn label(total: int) -> string { \"total: {total}\" } fn main() -> unit { let total = twice(3) console.println(label(total)) }";
 
         check_source(source).expect("函数调用和字符串插值应通过类型检查");
+    }
+
+    #[test]
+    fn records_types_for_checked_value_expressions() {
+        let source = "import yan.platform.console fn main() -> unit { let count = 1 console.println(count) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+
+        let typed = check(&program).expect("测试源码应通过类型检查");
+
+        assert!(typed
+            .expression_types()
+            .iter()
+            .any(|expression| expression.ty == Type::Int));
+        assert!(typed
+            .expression_types()
+            .iter()
+            .any(|expression| expression.ty == Type::Unit));
     }
 
     #[test]

@@ -21,6 +21,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yan-mir"
+version = "0.1.0"
+dependencies = [
+ "yan-hir",
+ "yan-source",
+ "yan-syntax",
+ "yan-typeck",
+]
+
+[[package]]
 name = "yan-source"
 version = "0.1.0"
 
@@ -46,6 +56,7 @@ version = "0.1.0"
 dependencies = [
  "yan-eval",
  "yan-hir",
+ "yan-mir",
  "yan-source",
  "yan-syntax",
  "yan-typeck",

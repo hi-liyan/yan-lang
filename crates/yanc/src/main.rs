@@ -11,9 +11,10 @@ use std::{
 
 use yan_eval::execute;
 use yan_hir::{lower, Program};
+use yan_mir::lower as lower_mir;
 use yan_source::{SourceFile, Span};
 use yan_syntax::{lex, parse, SyntaxProgram};
-use yan_typeck::{check, check_library};
+use yan_typeck::{check, check_library, TypedProgram};
 
 /// `yanc` 的稳定帮助文本。CLI 面向用户的全部输出均使用英文。
 const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
@@ -49,7 +50,7 @@ fn run_command(path: &Path) -> ExitCode {
         Err(diagnostic) => return render_diagnostic(&diagnostic),
     };
 
-    match execute(&compiled.program) {
+    match execute(&compiled.typed) {
         Ok(lines) => {
             for line in lines {
                 println!("{line}");
@@ -89,19 +90,22 @@ fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnosti
             .functions
             .iter()
             .any(|function| function.name == "main");
-    let check_result = if checked_as_library {
+    let typed = if checked_as_library {
         check_library(&program)
     } else {
         check(&program)
-    };
-    check_result.map_err(|error| Diagnostic {
+    }
+    .map_err(|error| Diagnostic {
         source: entry.source.clone(),
         span: error.span,
         message: error.message,
     })?;
+    // M14 先建立从 Typed HIR 到 MIR 的编译边界。当前解释器仍在下一子阶段迁移，
+    // 因此这里只验证 MIR lowering 能覆盖已通过类型检查的每个函数。
+    let _mir = lower_mir(typed.clone());
     Ok(CompiledProgram {
         source: entry.source,
-        program,
+        typed,
     })
 }
 
@@ -335,7 +339,7 @@ fn import_error(module: &ModuleFile, span: Span, message: impl Into<String>) -> 
 /// 同时保存已检查 HIR 与其原始文本，供后续阶段复用相同的诊断坐标。
 struct CompiledProgram {
     source: SourceFile,
-    program: Program,
+    typed: TypedProgram,
 }
 
 #[derive(Debug)]
@@ -375,12 +379,14 @@ mod tests {
 
         let compiled = compile(&path, true).expect("模块示例应完成链接与类型检查");
         assert!(compiled
-            .program
+            .typed
+            .program()
             .structs
             .iter()
             .any(|structure| structure.name == "Task"));
         assert!(compiled
-            .program
+            .typed
+            .program()
             .functions
             .iter()
             .any(|function| function.name == "rename_task"));

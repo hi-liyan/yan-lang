@@ -4,6 +4,7 @@ members = [
   "crates/yan-syntax",
   "crates/yan-hir",
   "crates/yan-typeck",
+  "crates/yan-mir",
   "crates/yan-eval",
   "crates/yanc",
 ]

@@ -4,12 +4,14 @@ use std::collections::HashMap;
 
 use yan_hir::{Expression, Function, Program, Statement, StringPart};
 use yan_source::Span;
+use yan_typeck::TypedProgram;
 
-/// 执行已通过类型检查的 M3 程序，并返回平台控制台产生的输出行。
+/// 执行已通过类型检查的 Yan 程序，并返回平台控制台产生的输出行。
 ///
-/// M3 使用解释执行验证函数语义闭环。未来 Rust 后端应消费相同 HIR；调用方必须先运行
-/// `yan-typeck`，否则本函数会将违反内部不变量的情况报告为错误。
-pub fn execute(program: &Program) -> Result<Vec<String>, EvalError> {
+/// 解释器只接受 [`TypedProgram`]，从类型边界上禁止调用方绕过 `yan-typeck`。M14 完成
+/// 完整 MIR lowering 后，解释器将进一步改为消费 MIR，而后端仍不得重新执行类型规则。
+pub fn execute(typed: &TypedProgram) -> Result<Vec<String>, EvalError> {
+    let program = typed.program();
     let main = find_function(program, "main", Span::default())?;
     let mut output = Vec::new();
     match execute_function(program, main, Vec::new(), &mut output)? {
@@ -753,12 +755,9 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
-        assert_eq!(
-            execute(&program).expect("测试源码应能执行"),
-            vec!["total: 6"]
-        );
+        assert_eq!(execute(&typed).expect("测试源码应能执行"), vec!["total: 6"]);
     }
 
     #[test]
@@ -767,10 +766,10 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(
-            execute(&program).expect("测试源码应能执行"),
+            execute(&typed).expect("测试源码应能执行"),
             vec!["{\"http\": 80, \"https\": 443}"]
         );
     }
@@ -781,10 +780,10 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(
-            execute(&program).expect("测试源码应能执行"),
+            execute(&typed).expect("测试源码应能执行"),
             vec!["failed: network"]
         );
     }
@@ -795,9 +794,9 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
-        assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["Lin"]);
+        assert_eq!(execute(&typed).expect("测试源码应能执行"), vec!["Lin"]);
     }
 
     #[test]
@@ -806,10 +805,10 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
         assert_eq!(
-            execute(&program).expect("测试源码应能执行"),
+            execute(&typed).expect("测试源码应能执行"),
             vec!["command", "browser"]
         );
     }
@@ -820,9 +819,9 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
-        assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["8080"]);
+        assert_eq!(execute(&typed).expect("测试源码应能执行"), vec!["8080"]);
     }
 
     #[test]
@@ -831,9 +830,9 @@ mod tests {
         let tokens = lex(source).expect("测试源码应完成词法分析");
         let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
         let program = lower(syntax).expect("测试源码应完成 lowering");
-        check(&program).expect("测试源码应通过类型检查");
+        let typed = check(&program).expect("测试源码应通过类型检查");
 
-        let error = execute(&program).expect_err("main 返回 Err 必须作为执行失败报告");
+        let error = execute(&typed).expect_err("main 返回 Err 必须作为执行失败报告");
         assert_eq!(error.message, "main returned Err(ConfigError.MissingPort)");
     }
 }
