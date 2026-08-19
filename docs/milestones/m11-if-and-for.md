@@ -1,6 +1,6 @@
 # M11：条件表达式与列表循环
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/08-conditions/01_if.yan` 与 `examples/language-design/09-loops/01_for.yan` 能被 `yanc run` 检查并执行。
 
 ## 验收标准

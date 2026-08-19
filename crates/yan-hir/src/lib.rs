@@ -27,6 +27,8 @@ pub struct Program {
 /// 已 lowering 的真正新类型声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Newtype {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 新类型名称。
     pub name: String,
     /// 新类型名称的位置。
@@ -38,6 +40,8 @@ pub struct Newtype {
 /// 已 lowering 的具名结构体声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Struct {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 结构体名称。
     pub name: String,
     /// 结构体名称的位置。
@@ -49,6 +53,8 @@ pub struct Struct {
 /// 已 lowering 的封闭枚举声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Enum {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 枚举名称。
     pub name: String,
     /// 枚举名称在源文件中的位置。
@@ -95,6 +101,8 @@ pub struct Field {
 /// M3 支持的函数定义。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 函数名称。
     pub name: String,
     /// 函数名称的位置。
@@ -397,6 +405,7 @@ pub fn lower(program: SyntaxProgram) -> Result<Program, LowerError> {
 
 fn lower_newtype(newtype: yan_syntax::Newtype) -> Result<Newtype, LowerError> {
     Ok(Newtype {
+        public: newtype.public,
         name: newtype.name,
         name_span: newtype.name_span,
         underlying: lower_type(newtype.underlying)?,
@@ -405,6 +414,7 @@ fn lower_newtype(newtype: yan_syntax::Newtype) -> Result<Newtype, LowerError> {
 
 fn lower_struct(structure: yan_syntax::Struct) -> Result<Struct, LowerError> {
     Ok(Struct {
+        public: structure.public,
         name: structure.name,
         name_span: structure.name_span,
         fields: structure
@@ -417,6 +427,7 @@ fn lower_struct(structure: yan_syntax::Struct) -> Result<Struct, LowerError> {
 
 fn lower_enum(enumeration: SyntaxEnum) -> Result<Enum, LowerError> {
     Ok(Enum {
+        public: enumeration.public,
         name: enumeration.name,
         name_span: enumeration.name_span,
         variants: enumeration
@@ -468,6 +479,7 @@ pub struct LowerError {
 
 fn lower_function(function: yan_syntax::Function) -> Result<Function, LowerError> {
     Ok(Function {
+        public: function.public,
         name: function.name,
         name_span: function.name_span,
         parameters: function

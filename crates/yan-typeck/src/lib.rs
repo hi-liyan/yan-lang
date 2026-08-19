@@ -16,8 +16,19 @@ pub struct TypeError {
 
 /// 验证 M3 程序是否满足函数、类型与平台调用边界。
 pub fn check(program: &Program) -> Result<(), TypeError> {
+    check_program(program, true)
+}
+
+/// 验证不包含入口函数的库模块。
+///
+/// 库模块与可执行模块使用相同的声明、调用和类型规则，但不要求定义 `main`。
+pub fn check_library(program: &Program) -> Result<(), TypeError> {
+    check_program(program, false)
+}
+
+fn check_program(program: &Program, require_main: bool) -> Result<(), TypeError> {
     let console_imported = check_imports(program)?;
-    let signatures = collect_signatures(program)?;
+    let signatures = collect_signatures(program, require_main)?;
     let declarations = collect_declarations(program)?;
     check_no_recursion(program)?;
     for function in &program.functions {
@@ -334,7 +345,10 @@ fn check_imports(program: &Program) -> Result<bool, TypeError> {
     Ok(console_imported)
 }
 
-fn collect_signatures(program: &Program) -> Result<HashMap<String, Signature>, TypeError> {
+fn collect_signatures(
+    program: &Program,
+    require_main: bool,
+) -> Result<HashMap<String, Signature>, TypeError> {
     let mut signatures = HashMap::new();
     let mut main_count = 0;
 
@@ -369,7 +383,7 @@ fn collect_signatures(program: &Program) -> Result<HashMap<String, Signature>, T
         );
     }
 
-    if main_count != 1 {
+    if require_main && main_count != 1 {
         return Err(error(
             Span::default(),
             "an M3 source file must define exactly one main function",
@@ -1518,7 +1532,7 @@ mod tests {
     use yan_hir::lower;
     use yan_syntax::{lex, parse};
 
-    use super::check;
+    use super::{check, check_library};
 
     fn check_source(source: &str) -> Result<(), super::TypeError> {
         let tokens = lex(source).expect("测试源码应完成词法分析");
@@ -1532,6 +1546,16 @@ mod tests {
         let source = "import yan.platform.console fn twice(value: int) -> int { value * 2 } fn label(total: int) -> string { \"total: {total}\" } fn main() -> unit { let total = twice(3) console.println(label(total)) }";
 
         check_source(source).expect("函数调用和字符串插值应通过类型检查");
+    }
+
+    #[test]
+    fn checks_library_module_without_main() {
+        let source = "public fn greeting() -> string { \"hello\" }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+
+        check_library(&program).expect("库模块不应要求 main 函数");
     }
 
     #[test]

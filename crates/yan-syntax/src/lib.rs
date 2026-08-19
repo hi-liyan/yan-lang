@@ -100,6 +100,8 @@ pub struct SyntaxProgram {
 /// 真正的新类型声明，而非其底层类型的别名。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Newtype {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 新类型名称。
     pub name: String,
     /// 新类型名称的位置。
@@ -111,6 +113,8 @@ pub struct Newtype {
 /// 具名结构体声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Struct {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 结构体名称。
     pub name: String,
     /// 结构体名称的位置。
@@ -122,6 +126,8 @@ pub struct Struct {
 /// 封闭枚举声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Enum {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 枚举名称。
     pub name: String,
     /// 枚举名称在源文件中的位置。
@@ -210,6 +216,8 @@ pub struct Import {
 /// M3 支持的函数定义。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
+    /// 是否允许其他模块显式导入该声明。
+    pub public: bool,
     /// 函数名称。
     pub name: String,
     /// 函数名称在源文件中的位置。
@@ -550,11 +558,17 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let mut enums = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
+            let public = if self.peek_text() == Some("public") {
+                self.advance();
+                true
+            } else {
+                false
+            };
             match self.peek_text() {
-                Some("type") => newtypes.push(self.parse_newtype()?),
-                Some("struct") => structs.push(self.parse_struct()?),
-                Some("enum") => enums.push(self.parse_enum()?),
-                Some("fn") => functions.push(self.parse_function()?),
+                Some("type") => newtypes.push(self.parse_newtype(public)?),
+                Some("struct") => structs.push(self.parse_struct(public)?),
+                Some("enum") => enums.push(self.parse_enum(public)?),
+                Some("fn") => functions.push(self.parse_function(public)?),
                 _ => return Err(self.error_here("a declaration")),
             }
         }
@@ -569,19 +583,20 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         })
     }
 
-    fn parse_newtype(&mut self) -> Result<Newtype, ParseError> {
+    fn parse_newtype(&mut self, public: bool) -> Result<Newtype, ParseError> {
         self.consume_text("type", "a newtype declaration")?;
         let (name, name_span) = self.consume_identifier("newtype name")?;
         self.consume_kind(TokenKind::Equals, "`=`")?;
         let underlying = self.parse_type()?;
         Ok(Newtype {
+            public,
             name,
             name_span,
             underlying,
         })
     }
 
-    fn parse_struct(&mut self) -> Result<Struct, ParseError> {
+    fn parse_struct(&mut self, public: bool) -> Result<Struct, ParseError> {
         self.consume_text("struct", "a struct declaration")?;
         let (name, name_span) = self.consume_identifier("struct name")?;
         self.consume_kind(TokenKind::LeftBrace, "`{`")?;
@@ -591,13 +606,14 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         }
         self.consume_kind(TokenKind::RightBrace, "`}`")?;
         Ok(Struct {
+            public,
             name,
             name_span,
             fields,
         })
     }
 
-    fn parse_enum(&mut self) -> Result<Enum, ParseError> {
+    fn parse_enum(&mut self, public: bool) -> Result<Enum, ParseError> {
         self.consume_text("enum", "an enum declaration")?;
         let (name, name_span) = self.consume_identifier("enum name")?;
         self.consume_kind(TokenKind::LeftBrace, "`{`")?;
@@ -626,6 +642,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         }
         self.consume_kind(TokenKind::RightBrace, "`}`")?;
         Ok(Enum {
+            public,
             name,
             name_span,
             variants,
@@ -667,7 +684,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         })
     }
 
-    fn parse_function(&mut self) -> Result<Function, ParseError> {
+    fn parse_function(&mut self, public: bool) -> Result<Function, ParseError> {
         self.consume_text("fn", "function declaration")?;
         let (name, name_span) = self.consume_identifier("function name")?;
         self.consume_kind(TokenKind::LeftParen, "`(`")?;
@@ -678,6 +695,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let statements = self.parse_statement_block()?;
 
         Ok(Function {
+            public,
             name,
             name_span,
             parameters,
@@ -1345,6 +1363,16 @@ mod tests {
             &program.functions[0].statements[2],
             Statement::Expression(Expression::For { statements, .. }) if statements.len() == 1
         ));
+    }
+
+    #[test]
+    fn parses_public_top_level_declaration() {
+        let source = "public fn greeting() -> string { \"hello\" } fn main() -> unit { }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
+
+        assert!(program.functions[0].public);
+        assert!(!program.functions[1].public);
     }
 
     #[test]
