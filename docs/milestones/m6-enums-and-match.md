@@ -1,6 +1,6 @@
 # M6：枚举与穷尽匹配
 
-状态：进行中
+状态：已完成
 范围：仅使 `examples/language-design/04-enums-and-match/01_enums_and_match.yan` 能被 `yanc run` 检查并执行。
 
 ## 前提

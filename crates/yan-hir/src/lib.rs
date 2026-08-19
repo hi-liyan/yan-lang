@@ -137,6 +137,8 @@ pub enum Type {
     List(Box<Type>),
     /// 键固定为 string、值类型统一的不可变 map。
     Map(Box<Type>),
+    /// 内建可选值，包含一个 T 值或不包含任何值。
+    Option(Box<Type>),
     /// 由源文件声明的名义类型，包括新类型和结构体。
     Named(String),
 }
@@ -443,6 +445,16 @@ fn lower_type(ty: TypeSyntax) -> Result<Type, LowerError> {
         ("List", [element]) => Ok(Type::List(Box::new(lower_type(element.clone())?))),
         ("Map", [key, value]) if key.name == "string" && key.arguments.is_empty() => {
             Ok(Type::Map(Box::new(lower_type(value.clone())?)))
+        }
+        ("Option", [element]) => {
+            let element = lower_type(element.clone())?;
+            if matches!(element, Type::Option(_)) {
+                return Err(LowerError {
+                    span: ty.span,
+                    message: "M7 does not support nested `Option` types".to_owned(),
+                });
+            }
+            Ok(Type::Option(Box::new(element)))
         }
         (name, []) => Ok(Type::Named(name.to_owned())),
         _ => Err(unsupported()),

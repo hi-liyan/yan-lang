@@ -44,6 +44,7 @@ enum Value {
     String(String),
     List(Vec<Value>),
     Map(Vec<(String, Value)>),
+    Optional(Option<Box<Value>>),
     Enum {
         enum_name: String,
         variant: String,
@@ -81,6 +82,8 @@ impl Value {
                     .join(", ");
                 format!("{{{rendered}}}")
             }
+            Self::Optional(Some(value)) => format!("Some({})", value.display()),
+            Self::Optional(None) => "None".to_owned(),
             Self::Enum {
                 enum_name,
                 variant,
@@ -188,38 +191,7 @@ fn evaluate(
             .collect::<Result<Vec<_>, EvalError>>()
             .map(Value::Map),
         Expression::Match { target, arms, span } => {
-            let value = evaluate(target, program, bindings, output)?;
-            let Value::Enum {
-                enum_name,
-                variant,
-                payload,
-            } = value
-            else {
-                return Err(EvalError::new(
-                    *span,
-                    "type-checked match must use an enum value",
-                ));
-            };
-            let arm = arms
-                .iter()
-                .find(|arm| arm.pattern.enum_name == enum_name && arm.pattern.variant == variant)
-                .ok_or_else(|| {
-                    EvalError::new(
-                        *span,
-                        format!("type-checked match is missing `{enum_name}.{variant}`"),
-                    )
-                })?;
-            let mut arm_bindings = bindings.clone();
-            if let Some((binding, binding_span)) = &arm.pattern.binding {
-                let payload = payload.ok_or_else(|| {
-                    EvalError::new(
-                        *binding_span,
-                        "type-checked match binding requires a payload",
-                    )
-                })?;
-                arm_bindings.insert(binding.clone(), *payload);
-            }
-            evaluate(&arm.value, program, &arm_bindings, output)
+            evaluate_match(target, arms, *span, program, bindings, output)
         }
         Expression::Variable { name, span } => bindings
             .get(name)
@@ -381,6 +353,18 @@ fn evaluate(
             path,
             arguments,
             span,
+        } if path.iter().map(String::as_str).eq(["Some"]) => {
+            let [argument] = arguments.as_slice() else {
+                return Err(EvalError::new(*span, "Some requires exactly one argument"));
+            };
+            Ok(Value::Optional(Some(Box::new(evaluate(
+                argument, program, bindings, output,
+            )?))))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
         } if path.len() == 2
             && program
                 .enums
@@ -477,6 +461,73 @@ fn render_string(
     Ok(Value::String(rendered))
 }
 
+/// 在已检查的 enum 或 Option 值上选择分支，并将可选载荷限定在该分支的局部绑定表中。
+fn evaluate_match(
+    target: &Expression,
+    arms: &[yan_hir::MatchArm],
+    span: Span,
+    program: &Program,
+    bindings: &HashMap<String, Value>,
+    output: &mut Vec<String>,
+) -> Result<Value, EvalError> {
+    match evaluate(target, program, bindings, output)? {
+        Value::Enum {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let arm = arms
+                .iter()
+                .find(|arm| arm.pattern.enum_name == enum_name && arm.pattern.variant == variant)
+                .ok_or_else(|| {
+                    EvalError::new(
+                        span,
+                        format!("type-checked match is missing `{enum_name}.{variant}`"),
+                    )
+                })?;
+            evaluate_match_arm(arm, payload, program, bindings, output)
+        }
+        Value::Optional(payload) => {
+            let variant = if payload.is_some() { "Some" } else { "None" };
+            let arm = arms
+                .iter()
+                .find(|arm| arm.pattern.enum_name.is_empty() && arm.pattern.variant == variant)
+                .ok_or_else(|| {
+                    EvalError::new(
+                        span,
+                        format!("type-checked Option match is missing `{variant}` arm"),
+                    )
+                })?;
+            evaluate_match_arm(arm, payload, program, bindings, output)
+        }
+        _ => Err(EvalError::new(
+            span,
+            "type-checked match must use an enum or Option value",
+        )),
+    }
+}
+
+/// 求值已选中的 match 分支；有绑定时必须有载荷，否则表示类型检查后的内部不变量破坏。
+fn evaluate_match_arm(
+    arm: &yan_hir::MatchArm,
+    payload: Option<Box<Value>>,
+    program: &Program,
+    bindings: &HashMap<String, Value>,
+    output: &mut Vec<String>,
+) -> Result<Value, EvalError> {
+    let mut arm_bindings = bindings.clone();
+    if let Some((binding, binding_span)) = &arm.pattern.binding {
+        let payload = payload.ok_or_else(|| {
+            EvalError::new(
+                *binding_span,
+                "type-checked match binding requires a payload",
+            )
+        })?;
+        arm_bindings.insert(binding.clone(), *payload);
+    }
+    evaluate(&arm.value, program, &arm_bindings, output)
+}
+
 fn find_function<'program>(
     program: &'program Program,
     name: &str,
@@ -554,5 +605,16 @@ mod tests {
             execute(&program).expect("测试源码应能执行"),
             vec!["failed: network"]
         );
+    }
+
+    #[test]
+    fn executes_option_match_with_some_binding() {
+        let source = "import yan.platform.console fn display_name(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { console.println(display_name(Some(\"Lin\"))) }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let program = lower(syntax).expect("测试源码应完成 lowering");
+        check(&program).expect("测试源码应通过类型检查");
+
+        assert_eq!(execute(&program).expect("测试源码应能执行"), vec!["Lin"]);
     }
 }

@@ -147,7 +147,7 @@ fn check_declared_type(
     span: Span,
 ) -> Result<(), TypeError> {
     match ty {
-        Type::List(element) | Type::Map(element) => {
+        Type::List(element) | Type::Map(element) | Type::Option(element) => {
             check_declared_type(element, declarations, span)
         }
         Type::Named(name)
@@ -640,6 +640,29 @@ fn type_of(
             path,
             arguments,
             span,
+        } if path.iter().map(String::as_str).eq(["Some"]) => {
+            if arguments.len() != 1 {
+                return Err(error(*span, "Some requires exactly one argument"));
+            }
+            let element = type_of(
+                &arguments[0],
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if matches!(element, Type::Option(_)) {
+                return Err(error(
+                    arguments[0].span(),
+                    "M7 does not support nested Option values",
+                ));
+            }
+            Ok(Type::Option(Box::new(element)))
+        }
+        Expression::Call {
+            path,
+            arguments,
+            span,
         } if path.len() == 2 && declarations.enums.contains_key(&path[0]) => {
             type_of_enum_constructor(
                 path,
@@ -868,8 +891,7 @@ fn type_of_enum_constructor(
     }
 }
 
-/// 验证 match 只覆盖目标 enum 的全部变体，并让有载荷变体仅在对应分支内引入绑定。
-/// 分支使用独立绑定表，避免载荷名称泄漏到 match 外或影响相邻分支。
+/// 根据目标类型分派 enum 或 Option 的受限穷尽匹配校验。
 fn type_of_match(
     target: &Expression,
     arms: &[yan_hir::MatchArm],
@@ -879,15 +901,51 @@ fn type_of_match(
     declarations: &Declarations,
     console_imported: bool,
 ) -> Result<Type, TypeError> {
-    let Type::Named(enum_name) =
-        type_of(target, bindings, signatures, declarations, console_imported)?
-    else {
-        return Err(error(target.span(), "match requires an enum value"));
-    };
-    let variants = declarations
-        .enums
-        .get(&enum_name)
-        .ok_or_else(|| error(target.span(), "match requires an enum value"))?;
+    match type_of(target, bindings, signatures, declarations, console_imported)? {
+        Type::Named(enum_name) if declarations.enums.contains_key(&enum_name) => {
+            type_of_enum_match(
+                &enum_name,
+                arms,
+                span,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )
+        }
+        Type::Option(element) => type_of_option_match(
+            &element,
+            arms,
+            span,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        ),
+        _ => Err(error(
+            target.span(),
+            "match requires an enum or Option value",
+        )),
+    }
+}
+
+/// 验证 match 只覆盖目标 enum 的全部变体，并让有载荷变体仅在对应分支内引入绑定。
+/// 分支使用独立绑定表，避免载荷名称泄漏到 match 外或影响相邻分支。
+fn type_of_enum_match(
+    enum_name: &str,
+    arms: &[yan_hir::MatchArm],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let variants = declarations.enums.get(enum_name).ok_or_else(|| {
+        error(
+            span,
+            format!("undefined enum `{enum_name}` in type-checked match"),
+        )
+    })?;
     let mut seen = HashMap::new();
     let mut result_type = None;
 
@@ -952,16 +1010,7 @@ fn type_of_match(
             declarations,
             console_imported,
         )?;
-        if let Some(expected) = &result_type {
-            if &arm_type != expected {
-                return Err(error(
-                    arm.value.span(),
-                    "match arm result types must be the same",
-                ));
-            }
-        } else {
-            result_type = Some(arm_type);
-        }
+        check_match_result_type(&mut result_type, arm_type, arm.value.span())?;
     }
 
     for variant in variants {
@@ -976,6 +1025,101 @@ fn type_of_match(
         }
     }
     result_type.ok_or_else(|| error(span, "match must contain at least one arm"))
+}
+
+/// 验证内建 Option 的 Some/None 两个固定分支，避免将其与用户 enum 变体混用。
+fn type_of_option_match(
+    element: &Type,
+    arms: &[yan_hir::MatchArm],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    let mut seen = HashMap::new();
+    let mut result_type = None;
+
+    for arm in arms {
+        if !arm.pattern.enum_name.is_empty() {
+            return Err(error(
+                arm.pattern.enum_name_span,
+                "Option match arms must use `Some` or `None`",
+            ));
+        }
+        if seen.insert(arm.pattern.variant.as_str(), ()).is_some() {
+            return Err(error(
+                arm.pattern.variant_span,
+                format!("Option match arm `{}` is duplicated", arm.pattern.variant),
+            ));
+        }
+
+        let mut arm_bindings = bindings.clone();
+        match (arm.pattern.variant.as_str(), &arm.pattern.binding) {
+            ("Some", Some((binding, _))) => {
+                arm_bindings.insert(
+                    binding.clone(),
+                    Binding {
+                        ty: element.clone(),
+                        mutable: false,
+                    },
+                );
+            }
+            ("Some", None) => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    "Some match arm requires a payload binding",
+                ));
+            }
+            ("None", None) => {}
+            ("None", Some(_)) => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    "None match arm has no payload",
+                ));
+            }
+            _ => {
+                return Err(error(
+                    arm.pattern.variant_span,
+                    "Option match arms must use `Some` or `None`",
+                ));
+            }
+        }
+        let arm_type = type_of(
+            &arm.value,
+            &arm_bindings,
+            signatures,
+            declarations,
+            console_imported,
+        )?;
+        check_match_result_type(&mut result_type, arm_type, arm.value.span())?;
+    }
+
+    for variant in ["Some", "None"] {
+        if !seen.contains_key(variant) {
+            return Err(error(
+                span,
+                format!("Option match is missing `{variant}` arm"),
+            ));
+        }
+    }
+    result_type.ok_or_else(|| error(span, "match must contain at least one arm"))
+}
+
+/// 统一校验所有 match 分支的结果类型，保证 match 保持单一表达式类型。
+fn check_match_result_type(
+    result_type: &mut Option<Type>,
+    arm_type: Type,
+    span: Span,
+) -> Result<(), TypeError> {
+    if let Some(expected) = result_type {
+        if &arm_type != expected {
+            return Err(error(span, "match arm result types must be the same"));
+        }
+    } else {
+        *result_type = Some(arm_type);
+    }
+    Ok(())
 }
 
 fn statement_span(statement: &Statement) -> Span {
@@ -1136,5 +1280,20 @@ mod tests {
             error.message,
             "match is missing enum variant `State.Failed`"
         );
+    }
+
+    #[test]
+    fn checks_option_match_with_some_binding() {
+        let source = "fn display_name(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { }";
+
+        check_source(source).expect("Option 的 Some/None 穷尽匹配应通过类型检查");
+    }
+
+    #[test]
+    fn rejects_option_match_without_none_arm() {
+        let source = "fn display_name(name: Option<string>) -> string { match name { Some(value) => value } } fn main() -> unit { }";
+
+        let error = check_source(source).expect_err("缺少 None 分支的 Option match 必须失败");
+        assert_eq!(error.message, "Option match is missing `None` arm");
     }
 }

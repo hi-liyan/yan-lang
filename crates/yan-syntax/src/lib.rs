@@ -862,9 +862,15 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     }
 
     fn parse_enum_pattern(&mut self) -> Result<EnumPattern, ParseError> {
-        let (enum_name, enum_name_span) = self.consume_identifier("enum name")?;
-        self.consume_kind(TokenKind::Dot, "`.`")?;
-        let (variant, variant_span) = self.consume_identifier("enum variant name")?;
+        let (first, first_span) = self.consume_identifier("match variant name")?;
+        let (enum_name, enum_name_span, variant, variant_span) =
+            if self.consume_if(TokenKind::Dot).is_some() {
+                let (variant, variant_span) = self.consume_identifier("enum variant name")?;
+                (first, first_span, variant, variant_span)
+            } else {
+                // Option 的 Some/None 是内建模式，不带用户 enum 前缀。
+                (String::new(), first_span, first, first_span)
+            };
         let binding = if self.consume_if(TokenKind::LeftParen).is_some() {
             let (name, span) = self.consume_identifier("enum payload binding")?;
             self.consume_kind(TokenKind::RightParen, "`)`")?;
@@ -1129,5 +1135,25 @@ mod tests {
             &program.functions[0].statements[0],
             Statement::Expression(Expression::Match { arms, .. }) if arms.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_unqualified_option_match_patterns() {
+        let source = "fn label(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { }";
+        let tokens = lex(source).expect("测试源码应能完成词法分析");
+        let program = parse(source, &tokens).expect("测试源码应能完成语法分析");
+
+        assert!(matches!(
+            &program.functions[0].statements[0],
+            Statement::Expression(Expression::Match { .. })
+        ));
+        let Statement::Expression(Expression::Match { arms, .. }) =
+            &program.functions[0].statements[0]
+        else {
+            return;
+        };
+        assert_eq!(arms[0].pattern.enum_name, "");
+        assert_eq!(arms[0].pattern.variant, "Some");
+        assert_eq!(arms[1].pattern.variant, "None");
     }
 }
