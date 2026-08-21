@@ -36,6 +36,24 @@ pub enum Value {
     Unit,
 }
 
+/// 后端传入的已解析匹配目标。
+///
+/// Option 与 Result 使用固定内建标签，用户 enum 只使用编译会话内稳定数字 variant ID。
+/// 此类型不携带 Yan 源码名称、模式树或类型检查信息，避免运行时重新执行前端语义。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatchTag {
+    /// 匹配 `Option` 的 Some 分支。
+    Some,
+    /// 匹配 `Option` 的 None 分支。
+    None,
+    /// 匹配 `Result` 的 Ok 分支。
+    Ok,
+    /// 匹配 `Result` 的 Err 分支。
+    Err,
+    /// 匹配已解析的用户 enum variant ID。
+    Enum(u32),
+}
+
 /// 受控运行时 intrinsic 的稳定失败原因。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -53,6 +71,8 @@ pub enum RuntimeError {
     InvalidHex,
     /// 控制台输出无法写入或刷新。
     ConsoleWriteFailed,
+    /// 匹配目标不是 Option、Result 或用户 enum 值。
+    InvalidMatchTarget,
 }
 
 /// 按 Yan 的用户可见规则显示值。
@@ -145,6 +165,36 @@ pub fn field(value: &Value, id: u32) -> Result<Value, RuntimeError> {
         _ => Err(RuntimeError::InvalidStructField),
     }
 }
+
+/// 对运行时值执行已解析 variant 匹配。
+///
+/// 标签匹配时返回 `Some(payload)`；无载荷的 None 或 enum variant 以 `Value::Unit` 表示
+/// payload。标签与值的 variant 不一致时返回 `Ok(None)`；值不是可匹配目标时返回
+/// [`RuntimeError::InvalidMatchTarget`]，让后端保留稳定的运行时失败边界。
+pub fn match_variant(value: &Value, tag: MatchTag) -> Result<Option<Value>, RuntimeError> {
+    match (value, tag) {
+        (Value::Option(Some(payload)), MatchTag::Some) => Ok(Some((**payload).clone())),
+        (Value::Option(None), MatchTag::None) => Ok(Some(Value::Unit)),
+        (Value::Option(_), MatchTag::Some | MatchTag::None) => Ok(None),
+        (Value::Result(Ok(payload)), MatchTag::Ok) => Ok(Some((**payload).clone())),
+        (Value::Result(Err(payload)), MatchTag::Err) => Ok(Some((**payload).clone())),
+        (Value::Result(_), MatchTag::Ok | MatchTag::Err) => Ok(None),
+        (Value::Enum(actual, payload), MatchTag::Enum(expected)) if *actual == expected => {
+            let value = match payload.as_deref() {
+                Some(payload) => payload.clone(),
+                None => Value::Unit,
+            };
+            Ok(Some(value))
+        }
+        (Value::Enum(_, _), MatchTag::Enum(_)) => Ok(None),
+        (Value::Option(_), MatchTag::Ok | MatchTag::Err | MatchTag::Enum(_))
+        | (Value::Result(_), MatchTag::Some | MatchTag::None | MatchTag::Enum(_))
+        | (Value::Enum(_, _), MatchTag::Some | MatchTag::None | MatchTag::Ok | MatchTag::Err) => {
+            Ok(None)
+        }
+        _ => Err(RuntimeError::InvalidMatchTarget),
+    }
+}
 /// 不可变 List 的受控迭代状态。
 #[derive(Clone, Debug)]
 pub struct ListIterator {
@@ -210,7 +260,7 @@ mod tests {
 
     use super::{
         add, bytes_from_hex, console_println_to, equal, field, iterator_next, list_iterator,
-        multiply, string_to_int, tuple_element, RuntimeError, Value,
+        match_variant, multiply, string_to_int, tuple_element, MatchTag, RuntimeError, Value,
     };
 
     struct FailingWriter;
@@ -310,5 +360,54 @@ mod tests {
             "{http: 80}"
         );
         assert_eq!(Value::Struct(vec![]).display(), "struct");
+    }
+
+    #[test]
+    fn matches_option_result_and_enum_values_by_their_resolved_tag() {
+        assert_eq!(
+            match_variant(
+                &Value::Option(Some(Box::new(Value::Integer(3)))),
+                MatchTag::Some
+            ),
+            Ok(Some(Value::Integer(3)))
+        );
+        assert_eq!(
+            match_variant(&Value::Option(None), MatchTag::None),
+            Ok(Some(Value::Unit))
+        );
+        assert_eq!(
+            match_variant(
+                &Value::Result(Ok(Box::new(Value::String("ok".into())))),
+                MatchTag::Ok
+            ),
+            Ok(Some(Value::String("ok".into())))
+        );
+        assert_eq!(
+            match_variant(&Value::Result(Err(Box::new(Value::Unit))), MatchTag::Err),
+            Ok(Some(Value::Unit))
+        );
+        assert_eq!(
+            match_variant(&Value::Enum(7, None), MatchTag::Enum(7)),
+            Ok(Some(Value::Unit))
+        );
+        assert_eq!(
+            match_variant(
+                &Value::Enum(8, Some(Box::new(Value::Boolean(true)))),
+                MatchTag::Enum(8)
+            ),
+            Ok(Some(Value::Boolean(true)))
+        );
+        assert_eq!(
+            match_variant(&Value::Option(None), MatchTag::Some),
+            Ok(None)
+        );
+        assert_eq!(
+            match_variant(&Value::Enum(7, None), MatchTag::Enum(8)),
+            Ok(None)
+        );
+        assert_eq!(
+            match_variant(&Value::Integer(1), MatchTag::Some),
+            Err(RuntimeError::InvalidMatchTarget)
+        );
     }
 }
