@@ -200,9 +200,11 @@ Yan 的核心差异化在于可强制执行的项目契约。
 Usage:
   yanc check <file.yan>
   yanc run <file.yan>
+  yanc build <file.yan>
   yanc --help
 
 <path>: check succeeded
+<path>: build succeeded: <binary-path>
 error: <path>:<line>:<column>: <message>
 ```
 
@@ -211,6 +213,8 @@ error: <path>:<line>:<column>: <message>
 - `check` 成功时仅向标准输出写入一行 `<path>: check succeeded`，并以状态码 `0` 退出。
 - 编译、检查或解释执行失败时，仅向标准错误写入一行 `error: ...`，并以非零状态码退出。`<line>` 与 `<column>` 均从 `1` 开始计数。
 - `run` 成功时只转发 Yan 程序的标准输出，不附加编译器成功提示，并以状态码 `0` 退出。
+- `build` 成功时仅向标准输出写入 `<path>: build succeeded: <binary-path>`，并以状态码 `0` 退出。
+- Cargo 或链接失败时，以入口文件的 `error: <entry-path>:1:1: backend build failed` 格式写入标准错误；不得透传 Cargo、Rust 或操作系统输出。
 - `<message>` 使用简短英文句式，不以句号结尾；普通英文单词使用小写，语言名与版本号可保留其正式大小写；标识符、类型名、模块路径和源码片段使用反引号包围。
 
 未来增加面向自动化的 JSON 输出时，必须以显式命令或开关启用，保持与人类文本输出分离，并对 schema 进行版本化；不得改变以上默认文本格式。

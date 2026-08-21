@@ -6,6 +6,8 @@ members = [
   "crates/yan-typeck",
   "crates/yan-mir",
   "crates/yan-eval",
+  "crates/yan-runtime",
+  "crates/yan-rust-backend",
   "crates/yanc",
 ]
 resolver = "2"

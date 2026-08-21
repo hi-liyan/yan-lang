@@ -5,6 +5,7 @@
 use std::{
     collections::HashSet,
     env, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -17,20 +18,63 @@ use yan_syntax::{lex, parse, SyntaxProgram};
 use yan_typeck::{check, check_library};
 
 /// `yanc` 的稳定帮助文本。CLI 面向用户的全部输出均使用英文。
-const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
+const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc build <file.yan>\n  yanc --help";
+
+/// 已解析的 `yanc` 命令及其唯一文件参数。
+///
+/// `build` 在此阶段先占用稳定 CLI 契约；后端实际生成与 Cargo 调用将在后续任务接入，
+/// 以避免命令分派绕过已验证 MIR 的编译管线。
+enum Command {
+    Help,
+    Check(PathBuf),
+    Run(PathBuf),
+    Build(PathBuf),
+    Invalid,
+}
 
 fn main() -> ExitCode {
-    match env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [command] if command == "--help" || command == "-h" => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+    match dispatch(&arguments, &mut stdout, &mut stderr) {
+        Ok(exit_code) => exit_code,
+        // 无法写入 CLI 输出时不能安全地继续报告状态，直接使用标准失败状态退出。
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// 按已解析命令执行 CLI 分派，并将帮助与参数错误写入指定输出流。
+///
+/// 显式传入输出流让帮助文本与退出码可在不启动子进程的情况下被回归测试，防止 `build`
+/// 的参数错误意外写入标准输出或改变为成功状态。
+fn dispatch(
+    arguments: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<ExitCode> {
+    match parse_command(arguments) {
+        Command::Help => {
+            writeln!(stdout, "{USAGE}")?;
+            Ok(ExitCode::SUCCESS)
         }
-        [command, path] if command == "check" => check_command(Path::new(path)),
-        [command, path] if command == "run" => run_command(Path::new(path)),
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
+        Command::Check(path) => Ok(check_command(&path)),
+        Command::Run(path) => Ok(run_command(&path)),
+        Command::Build(path) => Ok(build_command(&path)),
+        Command::Invalid => {
+            writeln!(stderr, "{USAGE}")?;
+            Ok(ExitCode::from(2))
         }
+    }
+}
+
+/// 将命令行实参归类为受支持命令，未提供文件的 `build` 与其他非法组合统一走帮助错误路径。
+fn parse_command(arguments: &[String]) -> Command {
+    match arguments {
+        [command] if command == "--help" || command == "-h" => Command::Help,
+        [command, path] if command == "check" => Command::Check(PathBuf::from(path)),
+        [command, path] if command == "run" => Command::Run(PathBuf::from(path)),
+        [command, path] if command == "build" => Command::Build(PathBuf::from(path)),
+        _ => Command::Invalid,
     }
 }
 
@@ -62,6 +106,18 @@ fn run_command(path: &Path) -> ExitCode {
             render_diagnostic(&diagnostic)
         }
     }
+}
+
+/// 报告尚未接入实际 Rust 生成的 `build` 占位诊断。
+///
+/// 此函数不得尝试调用 Cargo 或生成文件；M15 的后续任务会在 Verified MIR 后端可生成
+/// 受控项目时替换此分支。现在保留既定诊断格式，避免向用户暴露内部未完成状态。
+fn build_command(path: &Path) -> ExitCode {
+    render_diagnostic(&Diagnostic {
+        source: SourceFile::new(path, ""),
+        span: Span::default(),
+        message: "backend build failed".to_owned(),
+    })
 }
 
 fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnostic> {
@@ -354,11 +410,29 @@ mod tests {
     use std::collections::HashSet;
     use std::fs;
     use std::path::Path;
+    use std::process::ExitCode;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{compile, find_source_root, read_module, validate_module_path};
+    use super::{compile, dispatch, find_source_root, read_module, validate_module_path, USAGE};
     use yan_eval::execute;
     use yan_source::SourceMap;
+
+    #[test]
+    fn usage_lists_build_and_build_without_file_prints_usage_to_stderr(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            USAGE,
+            "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc build <file.yan>\n  yanc --help"
+        );
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = dispatch(&["build".to_owned()], &mut stdout, &mut stderr)?;
+
+        assert_eq!(exit_code, ExitCode::from(2));
+        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8(stderr)?, format!("{USAGE}\n"));
+        Ok(())
+    }
 
     #[test]
     fn links_public_declarations_from_file_modules() {

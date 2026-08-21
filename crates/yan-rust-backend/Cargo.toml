@@ -1,0 +1,12 @@
+[package]
+name = "yan-rust-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+yan-mir = { path = "../yan-mir" }
+yan-runtime = { path = "../yan-runtime" }
+
+[lints]
+workspace = true

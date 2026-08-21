@@ -32,6 +32,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "yan-runtime"
+version = "0.1.0"
+
+[[package]]
+name = "yan-rust-backend"
+version = "0.1.0"
+dependencies = [
+ "yan-mir",
+ "yan-runtime",
+]
+
+[[package]]
 name = "yan-source"
 version = "0.1.0"
 
