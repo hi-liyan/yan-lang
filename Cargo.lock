@@ -39,8 +39,11 @@ version = "0.1.0"
 name = "yan-rust-backend"
 version = "0.1.0"
 dependencies = [
+ "yan-hir",
  "yan-mir",
  "yan-runtime",
+ "yan-syntax",
+ "yan-typeck",
 ]
 
 [[package]]

@@ -8,5 +8,10 @@ license.workspace = true
 yan-mir = { path = "../yan-mir" }
 yan-runtime = { path = "../yan-runtime" }
 
+[dev-dependencies]
+yan-hir = { path = "../yan-hir" }
+yan-syntax = { path = "../yan-syntax" }
+yan-typeck = { path = "../yan-typeck" }
+
 [lints]
 workspace = true
