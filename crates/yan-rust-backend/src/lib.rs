@@ -1,8 +1,9 @@
 //! Yan 已验证 MIR 的 Rust 后端边界。
 //!
 //! 本 crate 的生产依赖仅为 `yan-mir` 与 `yan-runtime`，公开后端入口只能接收
-//! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 3 仅将单基本块
-//! 顺序 MIR 生成为受控 Rust 文本，不写入文件、不调用 Cargo，也不处理控制流。
+//! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 4b1 将
+//! `Goto`、`Branch`、`Return` 与 `Phi` 生成为基本块状态循环；`Match`、`PropagateErr`
+//! 与 List 遍历指令仍返回稳定的未支持 MIR 诊断。本 crate 不写入文件，也不调用 Cargo。
 //!
 //! `yan-hir`、`yan-syntax` 与 `yan-typeck` 仅作为开发依赖，用于测试中构造真实
 //! `VerifiedProgram` fixture；它们不会进入后端生产构建产物或公开 API。
@@ -19,7 +20,7 @@ use yan_mir::{
 pub enum BackendError {
     /// 当前阶段尚未支持将已验证 MIR 生成为受控 Rust 构建产物。
     UnsupportedProgram,
-    /// 当前 M15 Task 3 尚未支持的 MIR 控制流或指令。
+    /// 当前 M15 Task 4b1 尚未支持的 MIR 控制流或指令。
     UnsupportedMir {
         /// 未支持 MIR 节点对应的 Yan 源位置。
         location: SourceLocation,
@@ -42,8 +43,9 @@ pub struct GeneratedProgram {
 
 /// 从已验证 MIR 生成受控的 Rust 后端产物。
 ///
-/// 入口仅接受 `VerifiedProgram`，从类型边界禁止后端重新解析前端表示。当前仅生成单基本块
-/// 的顺序 MIR；控制流由后续任务处理，且本函数不写入文件或调用 Cargo。
+/// 入口仅接受 `VerifiedProgram`，从类型边界禁止后端重新解析前端表示。当前以基本块状态
+/// 循环生成 `Goto`、`Branch`、`Return` 与 `Phi`；`Match`、`PropagateErr` 与 List 遍历仍
+/// 被稳定拒绝。本函数不写入文件或调用 Cargo。
 pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendError> {
     let mut main_rs = String::from(RUNTIME_PRELUDE);
     for function in program.functions() {
@@ -568,10 +570,21 @@ mod tests {
         let program = verified_fixture(
             "fn display_name(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { let value = display_name(Some(\"yan\")) }",
         )?;
+        let expected_location = program
+            .functions()
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .find_map(|block| match block.terminator {
+                Terminator::Match { location, .. } => Some(location),
+                _ => None,
+            })
+            .ok_or("fixture must lower match control flow")?;
 
         match generate(&program) {
-            Err(BackendError::UnsupportedMir { message, .. }) => {
+            Err(BackendError::UnsupportedMir { location, message }) => {
                 assert_eq!(message, "unsupported MIR control flow");
+                assert_eq!(location, expected_location);
+                assert_ne!(location.span, Default::default());
                 Ok(())
             }
             Err(error) => Err(format!("unexpected backend error: {error:?}")),
