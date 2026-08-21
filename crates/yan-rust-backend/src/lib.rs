@@ -1,7 +1,11 @@
 //! Yan 已验证 MIR 的 Rust 后端边界。
 //!
-//! 本 crate 只能接收 `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15
-//! Task 1 不生成 Rust 源码、不调用 Cargo，也不定义运行时值。
+//! 本 crate 的生产依赖仅为 `yan-mir` 与 `yan-runtime`，公开后端入口只能接收
+//! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 3 仅将单基本块
+//! 顺序 MIR 生成为受控 Rust 文本，不写入文件、不调用 Cargo，也不处理控制流。
+//!
+//! `yan-hir`、`yan-syntax` 与 `yan-typeck` 仅作为开发依赖，用于测试中构造真实
+//! `VerifiedProgram` fixture；它们不会进入后端生产构建产物或公开 API。
 
 use yan_mir::{
     BinaryOperator, CallTarget, Constant, Instruction, Operand, SourceLocation, StringPart,
