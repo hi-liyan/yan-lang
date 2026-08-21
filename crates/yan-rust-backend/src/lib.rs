@@ -2,8 +2,8 @@
 //!
 //! 本 crate 的生产依赖仅为 `yan-mir` 与 `yan-runtime`，公开后端入口只能接收
 //! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 4b2 将
-//! `Goto`、`Branch`、`Match`、`Return` 与 `Phi` 生成为基本块状态循环；`PropagateErr`
-//! 与 List 遍历指令仍返回稳定的未支持 MIR 诊断。本 crate 不写入文件，也不调用 Cargo。
+//! `Goto`、`Branch`、`Match`、`Return`、`Phi`、`PropagateErr` 与 List 遍历指令生成为
+//! 基本块状态循环。本 crate 不写入文件，也不调用 Cargo。
 //!
 //! `yan-hir`、`yan-syntax` 与 `yan-typeck` 仅作为开发依赖，用于测试中构造真实
 //! `VerifiedProgram` fixture；它们不会进入后端生产构建产物或公开 API。
@@ -20,7 +20,7 @@ use yan_mir::{
 pub enum BackendError {
     /// 当前阶段尚未支持将已验证 MIR 生成为受控 Rust 构建产物。
     UnsupportedProgram,
-    /// 当前 M15 Task 4b1 尚未支持的 MIR 控制流或指令。
+    /// 当前 M15 尚未支持的 MIR 节点。
     UnsupportedMir {
         /// 未支持 MIR 节点对应的 Yan 源位置。
         location: SourceLocation,
@@ -44,8 +44,8 @@ pub struct GeneratedProgram {
 /// 从已验证 MIR 生成受控的 Rust 后端产物。
 ///
 /// 入口仅接受 `VerifiedProgram`，从类型边界禁止后端重新解析前端表示。当前以基本块状态
-/// 循环生成 `Goto`、`Branch`、`Match`、`Return` 与 `Phi`；`PropagateErr` 与 List 遍历仍
-/// 被稳定拒绝。本函数不写入文件或调用 Cargo。
+/// 循环生成 `Goto`、`Branch`、`Match`、`Return`、`Phi`、`PropagateErr` 与 List 遍历。
+/// 本函数不写入文件或调用 Cargo。
 pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendError> {
     let mut main_rs = String::from(RUNTIME_PRELUDE);
     for function in program.functions() {
@@ -68,8 +68,8 @@ pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendEr
 }
 
 /// 受控 Rust 源的固定运行时片段，不从 Yan 源码复制标识符或 Rust 代码。
-const RUNTIME_PRELUDE: &str = r#"#![allow(dead_code, unused_assignments, unused_variables)]
-use yan_runtime::{add, bytes_from_hex, console_println, equal, field, match_variant, multiply, string_to_int, tuple_element, MatchTag, RuntimeError, Value};
+const RUNTIME_PRELUDE: &str = r#"#![allow(dead_code, unused_assignments, unused_imports, unused_variables)]
+use yan_runtime::{add, bytes_from_hex, console_println, equal, field, iterator_next, list_iterator, match_variant, multiply, string_to_int, tuple_element, ListIterator, MatchTag, RuntimeError, Value};
 fn runtime_value(result: Result<Value, RuntimeError>) -> Result<Value, RuntimeError> { result }
 fn display_value(value: &Value) -> String { value.display() }
 fn value_add(left: Value, right: Value) -> Result<Value, RuntimeError> { runtime_value(add(left, right)) }
@@ -85,19 +85,6 @@ fn argument(values: &[Value], index: usize) -> Value { match values.get(index) {
 "#;
 
 fn render_function(output: &mut String, function: &yan_mir::Function) -> Result<(), BackendError> {
-    for block in &function.blocks {
-        if matches!(block.terminator, Terminator::PropagateErr { .. }) {
-            return Err(unsupported(terminator_location(&block.terminator)));
-        }
-        for instruction in &block.instructions {
-            if matches!(
-                instruction,
-                Instruction::IterInit { .. } | Instruction::IterNext { .. }
-            ) {
-                return Err(unsupported(instruction_location(instruction)));
-            }
-        }
-    }
     output.push_str(&format!(
         "fn yan_fn_{}(args: Vec<Value>) -> Result<Value, RuntimeError> {{\n",
         (function.id.0).0
@@ -121,6 +108,11 @@ fn render_function(output: &mut String, function: &yan_mir::Function) -> Result<
     let destinations = value_destinations(&function.blocks);
     for destination in destinations {
         output.push_str(&format!("let mut v_{destination} = Value::Unit;\n"));
+    }
+    for iterator in iterator_destinations(&function.blocks) {
+        output.push_str(&format!(
+            "let mut i_{iterator}: Option<ListIterator> = None;\n"
+        ));
     }
     let tracks_predecessor = has_phi(&function.blocks);
     let block_binding = if has_jump(&function.blocks) {
@@ -170,7 +162,7 @@ fn has_jump(blocks: &[yan_mir::BasicBlock]) -> bool {
     blocks.iter().any(|block| {
         matches!(
             block.terminator,
-            Terminator::Goto { .. } | Terminator::Branch { .. }
+            Terminator::Goto { .. } | Terminator::Branch { .. } | Terminator::PropagateErr { .. }
         )
     })
 }
@@ -191,13 +183,46 @@ fn value_destinations(blocks: &[yan_mir::BasicBlock]) -> Vec<u32> {
                 | Instruction::LoadField { destination, .. }
                 | Instruction::Call { destination, .. }
                 | Instruction::Phi { destination, .. } => Some(destination.0),
-                Instruction::StoreLocal { .. }
-                | Instruction::IterInit { .. }
-                | Instruction::IterNext { .. } => None,
+                Instruction::IterNext {
+                    item_destination,
+                    has_value_destination,
+                    ..
+                } => {
+                    for destination in [item_destination.0, has_value_destination.0] {
+                        if !destinations.contains(&destination) {
+                            destinations.push(destination);
+                        }
+                    }
+                    None
+                }
+                Instruction::StoreLocal { .. } | Instruction::IterInit { .. } => None,
             };
             if let Some(destination) = destination {
                 if !destinations.contains(&destination) {
                     destinations.push(destination);
+                }
+            }
+        }
+        if let Terminator::PropagateErr { destination, .. } = block.terminator {
+            if !destinations.contains(&destination.0) {
+                destinations.push(destination.0);
+            }
+        }
+    }
+    destinations
+}
+
+/// 收集需要跨基本块保存的 List 遍历器临时值。
+///
+/// `IterInit` 与 `IterNext` 可能位于不同基本块，生成的 Rust 必须在函数作用域保留遍历
+/// 状态；使用 `Option` 使声明与实际初始化分离，仍由已验证 MIR 保证读取前已初始化。
+fn iterator_destinations(blocks: &[yan_mir::BasicBlock]) -> Vec<u32> {
+    let mut destinations = Vec::new();
+    for block in blocks {
+        for instruction in &block.instructions {
+            if let Instruction::IterInit { destination, .. } = instruction {
+                if !destinations.contains(&destination.0) {
+                    destinations.push(destination.0);
                 }
             }
         }
@@ -347,8 +372,33 @@ fn render_instruction(output: &mut String, instruction: &Instruction) -> Result<
             }
             output.push_str(" _ => return Err(RuntimeError::InvalidOperand), };\n");
         }
-        Instruction::IterInit { location, .. } | Instruction::IterNext { location, .. } => {
-            return Err(unsupported(*location))
+        Instruction::IterInit {
+            destination,
+            iterable,
+            ..
+        } => {
+            output.push_str(&format!(
+                "i_{} = Some(list_iterator(&{})?);\n",
+                destination.0,
+                render_operand(iterable)
+            ));
+        }
+        Instruction::IterNext {
+            iterator,
+            item_destination,
+            has_value_destination,
+            ..
+        } => {
+            // 迭代器只能由前序 IterInit 写入。None 是防御性处理，不将 Rust 的可选状态
+            // 暴露为 Yan 语义，并在破坏 MIR 不变量时保留现有运行时错误边界。
+            output.push_str(&format!(
+                "match iterator_next(i_{}.as_mut().ok_or(RuntimeError::InvalidOperand)?) {{ Some(item) => {{ v_{} = item; v_{} = Value::Boolean(true); }}, None => {{ v_{} = Value::Unit; v_{} = Value::Boolean(false); }} }}\n",
+                iterator.0,
+                item_destination.0,
+                has_value_destination.0,
+                item_destination.0,
+                has_value_destination.0
+            ));
         }
     }
     Ok(())
@@ -422,7 +472,26 @@ fn render_terminator(output: &mut String, terminator: &Terminator, tracks_predec
             }
             output.push_str(&format!("block = {}; continue;\n", otherwise.0));
         }
-        Terminator::PropagateErr { .. } => {}
+        Terminator::PropagateErr {
+            result,
+            destination,
+            success,
+            ..
+        } => {
+            let predecessor = if tracks_predecessor {
+                "previous_block = block; "
+            } else {
+                ""
+            };
+            // MIR 验证已确认 Result 的错误类型与当前函数返回类型一致。错误路径直接返回
+            // 原始 Yan Err 值，成功路径只提取 Ok 载荷并进入其唯一的后继基本块。
+            output.push_str(&format!(
+                "match {} {{ Value::Result(Ok(value)) => {{ v_{} = *value; {predecessor}block = {}; continue; }}, Value::Result(Err(error)) => return Ok(Value::Result(Err(error))), _ => return Err(RuntimeError::InvalidOperand), }}\n",
+                render_operand(result),
+                destination.0,
+                success.0
+            ));
+        }
     }
 }
 
@@ -528,36 +597,6 @@ fn unsupported(location: SourceLocation) -> BackendError {
         message: "unsupported MIR control flow",
     }
 }
-fn terminator_location(terminator: &Terminator) -> SourceLocation {
-    match terminator {
-        Terminator::Goto { location, .. }
-        | Terminator::Branch { location, .. }
-        | Terminator::Match { location, .. }
-        | Terminator::Return { location, .. }
-        | Terminator::PropagateErr { location, .. }
-        | Terminator::Unreachable { location } => *location,
-    }
-}
-
-fn instruction_location(instruction: &Instruction) -> SourceLocation {
-    match instruction {
-        Instruction::Assign { location, .. }
-        | Instruction::StoreLocal { location, .. }
-        | Instruction::Binary { location, .. }
-        | Instruction::BuildString { location, .. }
-        | Instruction::BuildList { location, .. }
-        | Instruction::BuildMap { location, .. }
-        | Instruction::BuildTuple { location, .. }
-        | Instruction::TupleElement { location, .. }
-        | Instruction::BuildStruct { location, .. }
-        | Instruction::LoadField { location, .. }
-        | Instruction::Call { location, .. }
-        | Instruction::Phi { location, .. }
-        | Instruction::IterInit { location, .. }
-        | Instruction::IterNext { location, .. } => *location,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -566,7 +605,7 @@ mod tests {
 
     use super::{generate, BackendError, GeneratedProgram};
     use yan_hir::lower;
-    use yan_mir::{lower as lower_mir, verify, Instruction, Terminator, VerifiedProgram};
+    use yan_mir::{lower as lower_mir, verify, VerifiedProgram};
     use yan_syntax::{lex, parse};
     use yan_typeck::check;
 
@@ -608,57 +647,44 @@ mod tests {
     }
 
     #[test]
-    fn rejects_result_propagation_with_its_question_expression_location() -> Result<(), String> {
-        let program = verified_fixture(
-            "fn unwrap(value: Result<int, unit>) -> Result<int, unit> { let item = value? Ok(item) } fn main() -> unit { }",
+    fn generated_project_propagates_result_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let output = run_generated(
+            "import yan.platform.console fn unwrap(value: Result<int, int>) -> Result<int, int> { let item = value? Ok(item) } fn choose(flag: bool, value: Result<int, int>) -> Result<int, int> { let item = if flag { value? } else { 0 } Ok(item) } fn main() -> unit { console.println(unwrap(Ok(7))) console.println(unwrap(Err(9))) console.println(choose(true, Ok(8))) }",
         )?;
-        let expected_location = program
-            .functions()
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .find_map(|block| match block.terminator {
-                Terminator::PropagateErr { location, .. } => Some(location),
-                _ => None,
-            })
-            .ok_or("fixture must lower Result propagation")?;
 
-        match generate(&program) {
-            Err(BackendError::UnsupportedMir { location, message }) => {
-                assert_eq!(message, "unsupported MIR control flow");
-                assert_eq!(location, expected_location);
-                assert_ne!(location.span, Default::default());
-                Ok(())
-            }
-            Err(error) => Err(format!("unexpected backend error: {error:?}")),
-            Ok(_) => Err("Result propagation must remain unsupported in Task4b1".to_owned()),
-        }
+        assert!(
+            output.status.success(),
+            "generated program failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "generated program emitted stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout)?, "Ok(7)\nErr(9)\nOk(8)\n");
+        Ok(())
     }
 
     #[test]
-    fn rejects_list_for_with_its_for_expression_location() -> Result<(), String> {
-        let program =
-            verified_fixture("fn main() -> unit { for item in [1, 2] { let seen = item } }")?;
-        let expected_location = program
-            .functions()
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .find_map(|instruction| match instruction {
-                Instruction::IterInit { location, .. } => Some(*location),
-                _ => None,
-            })
-            .ok_or("fixture must lower List iteration")?;
+    fn generated_project_iterates_list_for_in_source_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = run_generated(
+            "import yan.platform.console fn main() -> unit { for first in [1, 2] { console.println(first) } for second in [3, 4] { console.println(second) } }",
+        )?;
 
-        match generate(&program) {
-            Err(BackendError::UnsupportedMir { location, message }) => {
-                assert_eq!(message, "unsupported MIR control flow");
-                assert_eq!(location, expected_location);
-                assert_ne!(location.span, Default::default());
-                Ok(())
-            }
-            Err(error) => Err(format!("unexpected backend error: {error:?}")),
-            Ok(_) => Err("List iteration must remain unsupported in Task4b1".to_owned()),
-        }
+        assert!(
+            output.status.success(),
+            "generated program failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "generated program emitted stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout)?, "1\n2\n3\n4\n");
+        Ok(())
     }
 
     #[test]
