@@ -51,8 +51,6 @@ pub enum RuntimeError {
     InvalidStructField,
     /// 十六进制输入不是合法 bytes 文本。
     InvalidHex,
-    /// 字符串不能转换为 int。
-    InvalidIntegerString,
     /// 控制台输出无法写入或刷新。
     ConsoleWriteFailed,
 }
