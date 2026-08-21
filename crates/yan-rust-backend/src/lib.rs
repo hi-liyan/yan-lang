@@ -522,7 +522,7 @@ mod tests {
 
     use super::{generate, BackendError, GeneratedProgram};
     use yan_hir::lower;
-    use yan_mir::{lower as lower_mir, verify, VerifiedProgram};
+    use yan_mir::{lower as lower_mir, verify, Instruction, Terminator, VerifiedProgram};
     use yan_syntax::{lex, parse};
     use yan_typeck::check;
 
@@ -576,6 +576,60 @@ mod tests {
             }
             Err(error) => Err(format!("unexpected backend error: {error:?}")),
             Ok(_) => Err("match control flow must remain unsupported in Task4b1".to_owned()),
+        }
+    }
+
+    #[test]
+    fn rejects_result_propagation_with_its_question_expression_location() -> Result<(), String> {
+        let program = verified_fixture(
+            "fn unwrap(value: Result<int, unit>) -> Result<int, unit> { let item = value? Ok(item) } fn main() -> unit { }",
+        )?;
+        let expected_location = program
+            .functions()
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .find_map(|block| match block.terminator {
+                Terminator::PropagateErr { location, .. } => Some(location),
+                _ => None,
+            })
+            .ok_or("fixture must lower Result propagation")?;
+
+        match generate(&program) {
+            Err(BackendError::UnsupportedMir { location, message }) => {
+                assert_eq!(message, "unsupported MIR control flow");
+                assert_eq!(location, expected_location);
+                assert_ne!(location.span, Default::default());
+                Ok(())
+            }
+            Err(error) => Err(format!("unexpected backend error: {error:?}")),
+            Ok(_) => Err("Result propagation must remain unsupported in Task4b1".to_owned()),
+        }
+    }
+
+    #[test]
+    fn rejects_list_for_with_its_for_expression_location() -> Result<(), String> {
+        let program =
+            verified_fixture("fn main() -> unit { for item in [1, 2] { let seen = item } }")?;
+        let expected_location = program
+            .functions()
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .find_map(|instruction| match instruction {
+                Instruction::IterInit { location, .. } => Some(*location),
+                _ => None,
+            })
+            .ok_or("fixture must lower List iteration")?;
+
+        match generate(&program) {
+            Err(BackendError::UnsupportedMir { location, message }) => {
+                assert_eq!(message, "unsupported MIR control flow");
+                assert_eq!(location, expected_location);
+                assert_ne!(location.span, Default::default());
+                Ok(())
+            }
+            Err(error) => Err(format!("unexpected backend error: {error:?}")),
+            Ok(_) => Err("List iteration must remain unsupported in Task4b1".to_owned()),
         }
     }
 
