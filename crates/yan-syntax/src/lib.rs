@@ -209,6 +209,8 @@ pub struct ModulePath {
 /// 单个 import 声明。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Import {
+    /// `import` 关键字在源码中的位置，用于将导入诊断定位到声明起点。
+    pub span: Span,
     /// 被引入的模块路径。
     pub path: ModulePath,
 }
@@ -547,8 +549,13 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
 
         let mut imports = Vec::new();
         while self.peek_text() == Some("import") {
+            let span = self
+                .current()
+                .map(|token| token.span)
+                .ok_or_else(|| self.error_at_end("import"))?;
             self.advance();
             imports.push(Import {
+                span,
                 path: self.parse_module_path()?,
             });
         }

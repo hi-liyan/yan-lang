@@ -411,7 +411,21 @@ fn backend_build_diagnostic(path: &Path, stderr: &mut dyn Write) -> io::Result<E
 fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnostic> {
     let mut sources = SourceMap::new();
     let entry = read_module(path, &mut sources)?;
-    let source_root = find_source_root(path);
+    compile_with_internal_modules(entry, Vec::new(), require_main, sources)
+}
+
+/// 使用附加的编译器内部模块完成既有前端与后端编译流程。
+///
+/// CLI 始终传入空列表；此参数仅供编译器拥有的模块在 M16 接入前验证其能够使用同一
+/// 模块图、类型检查与 MIR 后端流程，不能由用户路径、配置或导入填充。
+fn compile_with_internal_modules(
+    entry: ModuleFile,
+    internal_modules: Vec<ModuleFile>,
+    require_main: bool,
+    mut sources: SourceMap,
+) -> Result<CompiledProgram, Diagnostic> {
+    reject_reserved_yan_std_imports(&entry)?;
+    let source_root = find_source_root(entry.source.path());
     if entry.has_user_imports() && source_root.is_none() {
         return Err(Diagnostic {
             source: entry.source.clone(),
@@ -428,6 +442,7 @@ fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnosti
         let mut visiting = HashSet::new();
         collect_imported_modules(0, &source_root, &mut visiting, &mut modules, &mut sources)?;
     }
+    modules.extend(internal_modules);
     let graph = ModuleGraph::new(
         modules
             .into_iter()
@@ -574,6 +589,13 @@ fn collect_imported_modules(
 ) -> Result<(), Diagnostic> {
     let imports = modules[module_index].syntax.imports.clone();
     for import in &imports {
+        if is_reserved_yan_std_import(&import.path.segments) {
+            return Err(import_error(
+                &modules[module_index],
+                import.span,
+                "reserved module namespace `yan.std`",
+            ));
+        }
         if is_platform_import(&import.path.segments) {
             continue;
         }
@@ -648,6 +670,28 @@ fn is_platform_import(path: &[String]) -> bool {
     path.first().is_some_and(|segment| segment == "yan")
 }
 
+/// 拒绝用户模块在 M15 提前导入仅供 M16 使用的内部标准库根命名空间。
+///
+/// 此检查位于文件系统模块收集之前，使保留命名空间不因被视为 platform import 而绕过
+/// 诊断。编译器拥有的内部模块不经过本函数，因而未来仍可通过同一模块图加入会话。
+fn reject_reserved_yan_std_imports(module: &ModuleFile) -> Result<(), Diagnostic> {
+    for import in &module.syntax.imports {
+        if is_reserved_yan_std_import(&import.path.segments) {
+            return Err(import_error(
+                module,
+                import.span,
+                "reserved module namespace `yan.std`",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 判断导入路径是否以 M16 保留的 `yan.std` 根命名空间开始。
+fn is_reserved_yan_std_import(path: &[String]) -> bool {
+    matches!(path, [yan, standard_library, ..] if yan == "yan" && standard_library == "std")
+}
+
 fn import_error(module: &ModuleFile, span: Span, message: impl Into<String>) -> Diagnostic {
     Diagnostic {
         source: module.source.clone(),
@@ -714,11 +758,12 @@ mod tests {
 
     use super::{
         build_hash, cargo_build_command, cargo_isolation_root, cargo_isolation_root_from_public,
-        compile, dispatch, find_source_root, read_module, rejects_cargo_configuration_in_ancestors,
-        rejects_cargo_home_configuration, remove_cargo_target_configuration_environment,
-        validate_module_path, CargoIsolation, USAGE,
+        compile, compile_with_internal_modules, dispatch, find_source_root, read_module,
+        rejects_cargo_configuration_in_ancestors, rejects_cargo_home_configuration,
+        remove_cargo_target_configuration_environment, validate_module_path, CargoIsolation, USAGE,
     };
     use yan_eval::execute;
+    use yan_rust_backend::generate;
     use yan_source::SourceMap;
 
     #[test]
@@ -796,6 +841,42 @@ mod tests {
             .starts_with(&format!("{}: build succeeded: ", valid.display())));
 
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_user_import_of_reserved_yan_std_namespace() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let entry = temporary_entry("module app\nimport yan.std.text\nfn main() -> unit { }")?;
+        let _entry_cleanup = RemoveFileOnDrop(entry.clone());
+        let diagnostic = match compile(&entry, true) {
+            Ok(_) => return Err("M15 must reserve `yan.std`".into()),
+            Err(diagnostic) => diagnostic,
+        };
+
+        assert_eq!(diagnostic.source.path(), entry.as_path());
+        assert_eq!(
+            diagnostic.source.line_column(diagnostic.span.start),
+            Some((2, 1))
+        );
+        assert_eq!(diagnostic.message, "reserved module namespace `yan.std`");
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_owned_yan_std_module_uses_the_regular_compilation_pipeline(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let entry_path = temporary_entry("fn main() -> unit { }")?;
+        let internal_path = temporary_entry("module yan.std.fixture\npub fn value() -> int { 1 }")?;
+        let _entry_cleanup = RemoveFileOnDrop(entry_path.clone());
+        let _internal_cleanup = RemoveFileOnDrop(internal_path.clone());
+        let mut sources = SourceMap::new();
+        let entry = read_module(&entry_path, &mut sources).map_err(|error| error.message)?;
+        let internal = read_module(&internal_path, &mut sources).map_err(|error| error.message)?;
+
+        let compiled = compile_with_internal_modules(entry, vec![internal], true, sources)
+            .map_err(|error| error.message)?;
+        assert!(generate(&compiled.mir).is_ok());
         Ok(())
     }
 
