@@ -8,6 +8,7 @@ license.workspace = true
 yan-eval = { path = "../yan-eval" }
 yan-hir = { path = "../yan-hir" }
 yan-mir = { path = "../yan-mir" }
+yan-rust-backend = { path = "../yan-rust-backend" }
 yan-source = { path = "../yan-source" }
 yan-syntax = { path = "../yan-syntax" }
 yan-typeck = { path = "../yan-typeck" }

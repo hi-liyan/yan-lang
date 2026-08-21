@@ -73,6 +73,7 @@ dependencies = [
  "yan-eval",
  "yan-hir",
  "yan-mir",
+ "yan-rust-backend",
  "yan-source",
  "yan-syntax",
  "yan-typeck",

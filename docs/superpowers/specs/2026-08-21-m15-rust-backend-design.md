@@ -27,6 +27,8 @@ M16 的标准库将以 Yan 源文件随编译器发行，并由 `yanc` 自动与
 
 构建输入的稳定哈希决定 `target/yan/<entry-hash>/`。其下的 `cargo/` 为内部 Cargo 项目，`bin/` 为仅在 Cargo 成功后发布的最终二进制。失败时不得把不完整二进制作为成功产物报告。该目录被视为生成物，不能提交、编辑或通过 CLI 配置。
 
+Cargo 项目位置与 Cargo 配置发现位置必须分离：生成清单仍位于 `target/yan/<entry-hash>/cargo/Cargo.toml`，但 `yanc` 从不位于当前用户 Profile 下的编译器专属目录启动 Cargo，并以绝对 `--manifest-path` 指向该清单。Windows 使用经过绝对路径校验与规范化的 `%PUBLIC%\\yanc`，其他平台使用系统临时目录；隔离目录同时承载受控 `CARGO_HOME`。在创建目录前及以规范化 cwd 启动 Cargo 前，`yanc` 都扫描 cwd 到盘符根的 `.cargo/config.toml` 与旧版 `config`，并检查 `CARGO_HOME` 根的同名配置；发现任一配置即拒绝构建，而不继承它。启动子进程前还移除用户 `CARGO_BUILD_*`、`CARGO_TARGET_<TRIPLE>_*`、Rust wrapper 与 rustflags 环境变量，同时保留 MSVC 所需系统工具链环境。独占目录创建可避免已有同名目录的配置碰撞，但该策略不构成宿主机级完全隔离，也不抵御同权限进程在检查后修改文件系统。
+
 `yanc build` 的成功文本固定为 `<path>: build succeeded: <binary-path>`。前端和 lowering 诊断保留当前带行列的格式；Cargo 或链接失败统一转换为 `error: <entry-path>:1:1: backend build failed`，以隔离 Rust 与操作系统文本。
 
 ## 语义映射

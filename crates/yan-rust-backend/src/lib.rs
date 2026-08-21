@@ -62,7 +62,7 @@ pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendEr
         (entry.id.0).0
     ));
     Ok(GeneratedProgram {
-        manifest_toml: "[package]\nname = \"yan-generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nyan-runtime = { path = \"__YAN_RUNTIME_PATH__\" }\n".to_owned(),
+        manifest_toml: "[workspace]\n\n[package]\nname = \"yan-generated\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nyan-runtime = { path = \"__YAN_RUNTIME_PATH__\" }\n".to_owned(),
         main_rs,
     })
 }
@@ -520,7 +520,7 @@ fn render_constant(value: &Constant) -> String {
         Constant::Integer(value) => format!("Value::Integer({value})"),
         Constant::Float(value) => format!("Value::Float({})", rust_string(value)),
         Constant::Boolean(value) => format!("Value::Boolean({value})"),
-        Constant::String(value) => format!("Value::String({})", rust_string(value)),
+        Constant::String(value) => format!("Value::String({}.to_owned())", rust_string(value)),
         Constant::Unit => "Value::Unit".to_owned(),
         Constant::None => "Value::Option(None)".to_owned(),
         Constant::Variant(id) => format!("Value::Enum({}, None)", id.0),
@@ -702,6 +702,7 @@ mod tests {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let project =
             std::env::temp_dir().join(format!("yan-m15-generated-{unique}-{}", std::process::id()));
+        let _project_cleanup = RemoveDirectoryOnDrop(project.clone());
         let source = project.join("src");
         fs::create_dir_all(&source)?;
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -720,7 +721,6 @@ mod tests {
             .arg("--quiet")
             .current_dir(&project)
             .status()?;
-        fs::remove_dir_all(&project)?;
         if status.success() {
             Ok(())
         } else {
@@ -734,6 +734,7 @@ mod tests {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let project =
             std::env::temp_dir().join(format!("yan-m15-branch-{unique}-{}", std::process::id()));
+        let _project_cleanup = RemoveDirectoryOnDrop(project.clone());
         let source_dir = project.join("src");
         fs::create_dir_all(&source_dir)?;
         let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -752,8 +753,16 @@ mod tests {
             .arg("--quiet")
             .current_dir(&project)
             .output()?;
-        fs::remove_dir_all(project)?;
         Ok(output)
+    }
+
+    /// 测试生成的独立 Cargo 项目在任意提前返回路径上均应被回收。
+    struct RemoveDirectoryOnDrop(std::path::PathBuf);
+
+    impl Drop for RemoveDirectoryOnDrop {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
