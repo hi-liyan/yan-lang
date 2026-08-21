@@ -59,7 +59,7 @@ fn dispatch(
         }
         Command::Check(path) => Ok(check_command(&path)),
         Command::Run(path) => Ok(run_command(&path)),
-        Command::Build(path) => Ok(build_command(&path)),
+        Command::Build(path) => build_command(&path, stderr),
         Command::Invalid => {
             writeln!(stderr, "{USAGE}")?;
             Ok(ExitCode::from(2))
@@ -112,12 +112,15 @@ fn run_command(path: &Path) -> ExitCode {
 ///
 /// 此函数不得尝试调用 Cargo 或生成文件；M15 的后续任务会在 Verified MIR 后端可生成
 /// 受控项目时替换此分支。现在保留既定诊断格式，避免向用户暴露内部未完成状态。
-fn build_command(path: &Path) -> ExitCode {
-    render_diagnostic(&Diagnostic {
-        source: SourceFile::new(path, ""),
-        span: Span::default(),
-        message: "backend build failed".to_owned(),
-    })
+fn build_command(path: &Path, stderr: &mut dyn Write) -> io::Result<ExitCode> {
+    render_diagnostic_to(
+        &Diagnostic {
+            source: SourceFile::new(path, ""),
+            span: Span::default(),
+            message: "backend build failed".to_owned(),
+        },
+        stderr,
+    )
 }
 
 fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnostic> {
@@ -392,17 +395,27 @@ struct Diagnostic {
 }
 
 fn render_diagnostic(diagnostic: &Diagnostic) -> ExitCode {
+    let mut stderr = io::stderr().lock();
+    match render_diagnostic_to(diagnostic, &mut stderr) {
+        Ok(exit_code) => exit_code,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// 将诊断写入指定错误流，使 CLI 分派可验证标准错误与退出码的稳定契约。
+fn render_diagnostic_to(diagnostic: &Diagnostic, stderr: &mut dyn Write) -> io::Result<ExitCode> {
     // 编译阶段产生的 span 均来自 SourceFile；无效位置只可能来自读取文件失败这类无源码场景。
     let (line, column) = diagnostic
         .source
         .line_column(diagnostic.span.start)
         .unwrap_or((1, 1));
-    eprintln!(
+    writeln!(
+        stderr,
         "error: {}:{line}:{column}: {}",
         diagnostic.source.path().display(),
         diagnostic.message
-    );
-    ExitCode::FAILURE
+    )?;
+    Ok(ExitCode::FAILURE)
 }
 
 #[cfg(test)]
@@ -431,6 +444,27 @@ mod tests {
         assert_eq!(exit_code, ExitCode::from(2));
         assert!(stdout.is_empty());
         assert_eq!(String::from_utf8(stderr)?, format!("{USAGE}\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_with_file_prints_the_stable_backend_diagnostic_to_stderr(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let path = "example.yan";
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = dispatch(
+            &["build".to_owned(), path.to_owned()],
+            &mut stdout,
+            &mut stderr,
+        )?;
+
+        assert_ne!(exit_code, ExitCode::SUCCESS);
+        assert!(stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(stderr)?,
+            "error: example.yan:1:1: backend build failed\n"
+        );
         Ok(())
     }
 
