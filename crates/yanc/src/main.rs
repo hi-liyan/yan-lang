@@ -113,14 +113,19 @@ fn run_command(path: &Path) -> ExitCode {
 /// 此函数不得尝试调用 Cargo 或生成文件；M15 的后续任务会在 Verified MIR 后端可生成
 /// 受控项目时替换此分支。现在保留既定诊断格式，避免向用户暴露内部未完成状态。
 fn build_command(path: &Path, stderr: &mut dyn Write) -> io::Result<ExitCode> {
-    render_diagnostic_to(
-        &Diagnostic {
-            source: SourceFile::new(path, ""),
-            span: Span::default(),
-            message: "backend build failed".to_owned(),
-        },
-        stderr,
-    )
+    match compile(path, true) {
+        // 前端错误必须保留其模块来源与精确位置，不能被后端尚未实现的占位错误覆盖。
+        Err(diagnostic) => render_diagnostic_to(&diagnostic, stderr),
+        // 仅在 Verified MIR 已构建后，才将当前后端不支持映射为入口文件的稳定后端诊断。
+        Ok(_) => render_diagnostic_to(
+            &Diagnostic {
+                source: SourceFile::new(path, ""),
+                span: Span::default(),
+                message: "backend build failed".to_owned(),
+            },
+            stderr,
+        ),
+    }
 }
 
 fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnostic> {
@@ -448,23 +453,64 @@ mod tests {
     }
 
     #[test]
-    fn build_with_file_prints_the_stable_backend_diagnostic_to_stderr(
+    fn build_preserves_frontend_diagnostics_before_backend_lowering(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let path = "example.yan";
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yan-m15-build-diagnostics-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        let syntax_error = root.join("syntax.yan");
+        let type_error = root.join("type.yan");
+        let valid = root.join("valid.yan");
+        fs::write(&syntax_error, "fn main() -> unit {")?;
+        fs::write(&type_error, "fn main() -> unit { 1 }")?;
+        fs::write(&valid, "fn main() -> unit { }")?;
+
+        for path in [root.join("missing.yan"), syntax_error, type_error] {
+            let expected = match compile(&path, true) {
+                Err(diagnostic) => {
+                    let (line, column) = diagnostic
+                        .source
+                        .line_column(diagnostic.span.start)
+                        .ok_or("fixture diagnostic must have a source location")?;
+                    format!(
+                        "error: {}:{line}:{column}: {}\n",
+                        diagnostic.source.path().display(),
+                        diagnostic.message
+                    )
+                }
+                Ok(_) => return Err("invalid build fixture unexpectedly compiled".into()),
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let exit_code = dispatch(
+                &["build".to_owned(), path.display().to_string()],
+                &mut stdout,
+                &mut stderr,
+            )?;
+
+            assert_ne!(exit_code, ExitCode::SUCCESS);
+            assert!(stdout.is_empty());
+            assert_eq!(String::from_utf8(stderr)?, expected);
+        }
+
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let exit_code = dispatch(
-            &["build".to_owned(), path.to_owned()],
+            &["build".to_owned(), valid.display().to_string()],
             &mut stdout,
             &mut stderr,
         )?;
-
         assert_ne!(exit_code, ExitCode::SUCCESS);
         assert!(stdout.is_empty());
         assert_eq!(
             String::from_utf8(stderr)?,
-            "error: example.yan:1:1: backend build failed\n"
+            format!("error: {}:1:1: backend build failed\n", valid.display())
         );
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
