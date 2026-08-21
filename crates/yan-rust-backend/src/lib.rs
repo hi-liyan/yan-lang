@@ -1,16 +1,16 @@
 //! Yan 已验证 MIR 的 Rust 后端边界。
 //!
 //! 本 crate 的生产依赖仅为 `yan-mir` 与 `yan-runtime`，公开后端入口只能接收
-//! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 4b1 将
-//! `Goto`、`Branch`、`Return` 与 `Phi` 生成为基本块状态循环；`Match`、`PropagateErr`
+//! `yan_mir::VerifiedProgram`，不能依赖 AST、HIR 或 Typed HIR。M15 Task 4b2 将
+//! `Goto`、`Branch`、`Match`、`Return` 与 `Phi` 生成为基本块状态循环；`PropagateErr`
 //! 与 List 遍历指令仍返回稳定的未支持 MIR 诊断。本 crate 不写入文件，也不调用 Cargo。
 //!
 //! `yan-hir`、`yan-syntax` 与 `yan-typeck` 仅作为开发依赖，用于测试中构造真实
 //! `VerifiedProgram` fixture；它们不会进入后端生产构建产物或公开 API。
 
 use yan_mir::{
-    BinaryOperator, CallTarget, Constant, Instruction, Operand, SourceLocation, StringPart,
-    Terminator, VerifiedProgram,
+    BinaryOperator, CallTarget, Constant, Instruction, MatchPattern, Operand, SourceLocation,
+    StringPart, Terminator, VerifiedProgram,
 };
 
 /// Rust 后端无法完成生成时返回的稳定错误。
@@ -44,7 +44,7 @@ pub struct GeneratedProgram {
 /// 从已验证 MIR 生成受控的 Rust 后端产物。
 ///
 /// 入口仅接受 `VerifiedProgram`，从类型边界禁止后端重新解析前端表示。当前以基本块状态
-/// 循环生成 `Goto`、`Branch`、`Return` 与 `Phi`；`Match`、`PropagateErr` 与 List 遍历仍
+/// 循环生成 `Goto`、`Branch`、`Match`、`Return` 与 `Phi`；`PropagateErr` 与 List 遍历仍
 /// 被稳定拒绝。本函数不写入文件或调用 Cargo。
 pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendError> {
     let mut main_rs = String::from(RUNTIME_PRELUDE);
@@ -69,7 +69,7 @@ pub fn generate(program: &VerifiedProgram) -> Result<GeneratedProgram, BackendEr
 
 /// 受控 Rust 源的固定运行时片段，不从 Yan 源码复制标识符或 Rust 代码。
 const RUNTIME_PRELUDE: &str = r#"#![allow(dead_code, unused_assignments, unused_variables)]
-use yan_runtime::{add, bytes_from_hex, console_println, equal, field, multiply, string_to_int, tuple_element, RuntimeError, Value};
+use yan_runtime::{add, bytes_from_hex, console_println, equal, field, match_variant, multiply, string_to_int, tuple_element, MatchTag, RuntimeError, Value};
 fn runtime_value(result: Result<Value, RuntimeError>) -> Result<Value, RuntimeError> { result }
 fn display_value(value: &Value) -> String { value.display() }
 fn value_add(left: Value, right: Value) -> Result<Value, RuntimeError> { runtime_value(add(left, right)) }
@@ -80,15 +80,13 @@ fn value_struct_field(value: &Value, field_id: u32) -> Result<Value, RuntimeErro
 fn value_bytes_from_hex(value: Value) -> Result<Value, RuntimeError> { match value { Value::String(text) => runtime_value(bytes_from_hex(&text)), _ => Err(RuntimeError::InvalidOperand) } }
 fn value_string_to_int(value: &Value) -> Result<Value, RuntimeError> { match value { Value::String(text) => Ok(string_to_int(text)), _ => Err(RuntimeError::InvalidOperand) } }
 fn value_console_println(value: &Value) -> Result<Value, RuntimeError> { console_println(value).map(|_| Value::Unit) }
+fn value_match_variant(value: &Value, tag: MatchTag) -> Result<Option<Value>, RuntimeError> { match_variant(value, tag) }
 fn argument(values: &[Value], index: usize) -> Value { match values.get(index) { Some(value) => value.clone(), None => Value::Unit } }
 "#;
 
 fn render_function(output: &mut String, function: &yan_mir::Function) -> Result<(), BackendError> {
     for block in &function.blocks {
-        if matches!(
-            block.terminator,
-            Terminator::Match { .. } | Terminator::PropagateErr { .. }
-        ) {
+        if matches!(block.terminator, Terminator::PropagateErr { .. }) {
             return Err(unsupported(terminator_location(&block.terminator)));
         }
         for instruction in &block.instructions {
@@ -151,6 +149,10 @@ fn local_is_stored(blocks: &[yan_mir::BasicBlock], local: yan_mir::LocalId) -> b
     blocks.iter().any(|block| {
         block.instructions.iter().any(
             |instruction| matches!(instruction, Instruction::StoreLocal { local: stored, .. } if *stored == local),
+        ) || matches!(
+            &block.terminator,
+            Terminator::Match { arms, .. }
+                if arms.iter().any(|arm| arm.binding == Some(local))
         )
     })
 }
@@ -390,7 +392,47 @@ fn render_terminator(output: &mut String, terminator: &Terminator, tracks_predec
         Terminator::Unreachable { .. } => {
             output.push_str("return Err(RuntimeError::InvalidOperand);\n")
         }
-        Terminator::Match { .. } | Terminator::PropagateErr { .. } => {}
+        Terminator::Match {
+            target,
+            arms,
+            otherwise,
+            ..
+        } => {
+            // MIR 已验证各 arm 的模式和绑定类型。仍通过受控 runtime tag 分派，避免生成的
+            // Rust 按名称或 Rust enum 语义重新解释 Yan 的 variant。
+            for arm in arms {
+                output.push_str(&format!(
+                    "match value_match_variant(&{}, {})? {{ Some(payload) => {{ ",
+                    render_operand(target),
+                    render_match_tag(arm.pattern)
+                ));
+                if let Some(binding) = arm.binding {
+                    output.push_str(&format!("l_{} = payload; ", binding.0));
+                }
+                if tracks_predecessor {
+                    output.push_str("previous_block = block; ");
+                }
+                output.push_str(&format!(
+                    "block = {}; continue; }}, None => {{}} }}\n",
+                    arm.block.0
+                ));
+            }
+            if tracks_predecessor {
+                output.push_str("previous_block = block; ");
+            }
+            output.push_str(&format!("block = {}; continue;\n", otherwise.0));
+        }
+        Terminator::PropagateErr { .. } => {}
+    }
+}
+
+fn render_match_tag(pattern: MatchPattern) -> String {
+    match pattern {
+        MatchPattern::Some => "MatchTag::Some".to_owned(),
+        MatchPattern::None => "MatchTag::None".to_owned(),
+        MatchPattern::Ok => "MatchTag::Ok".to_owned(),
+        MatchPattern::Err => "MatchTag::Err".to_owned(),
+        MatchPattern::Variant(id) => format!("MatchTag::Enum({})", id.0),
     }
 }
 
@@ -566,33 +608,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_match_control_flow_with_a_stable_mir_diagnostic() -> Result<(), String> {
-        let program = verified_fixture(
-            "fn display_name(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { let value = display_name(Some(\"yan\")) }",
-        )?;
-        let expected_location = program
-            .functions()
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .find_map(|block| match block.terminator {
-                Terminator::Match { location, .. } => Some(location),
-                _ => None,
-            })
-            .ok_or("fixture must lower match control flow")?;
-
-        match generate(&program) {
-            Err(BackendError::UnsupportedMir { location, message }) => {
-                assert_eq!(message, "unsupported MIR control flow");
-                assert_eq!(location, expected_location);
-                assert_ne!(location.span, Default::default());
-                Ok(())
-            }
-            Err(error) => Err(format!("unexpected backend error: {error:?}")),
-            Ok(_) => Err("match control flow must remain unsupported in Task4b1".to_owned()),
-        }
-    }
-
-    #[test]
     fn rejects_result_propagation_with_its_question_expression_location() -> Result<(), String> {
         let program = verified_fixture(
             "fn unwrap(value: Result<int, unit>) -> Result<int, unit> { let item = value? Ok(item) } fn main() -> unit { }",
@@ -730,6 +745,39 @@ mod tests {
             (
                 "import yan.platform.console fn choose(flag: bool) -> int { if flag { return 1 } else { 2 } } fn main() -> unit { console.println(choose(true)) }",
                 "1\n",
+            ),
+        ] {
+            let output = run_generated(source)?;
+            assert!(
+                output.status.success(),
+                "generated program failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "generated program emitted stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stdout)?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_match_blocks_execute_option_result_and_enum_paths(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (source, expected) in [
+            (
+                "import yan.platform.console fn describe(value: Option<int>) -> int { match value { Some(item) => item None => 0 } } fn main() -> unit { console.println(describe(Some(7))) console.println(describe(None)) }",
+                "7\n0\n",
+            ),
+            (
+                "import yan.platform.console fn describe(value: Result<int, int>) -> int { match value { Ok(item) => item Err(problem) => problem } } fn main() -> unit { console.println(describe(Ok(9))) console.println(describe(Err(3))) }",
+                "9\n3\n",
+            ),
+            (
+                "import yan.platform.console enum State { Ready Waiting(value: int) } fn describe(state: State) -> int { match state { State.Ready => 0 State.Waiting(value) => value } } fn main() -> unit { console.println(describe(State.Ready)) console.println(describe(State.Waiting(5))) }",
+                "0\n5\n",
             ),
         ] {
             let output = run_generated(source)?;
