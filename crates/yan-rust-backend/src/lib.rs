@@ -82,12 +82,21 @@ fn argument(values: &[Value], index: usize) -> Value { match values.get(index) {
 "#;
 
 fn render_function(output: &mut String, function: &yan_mir::Function) -> Result<(), BackendError> {
-    if function.blocks.len() != 1 {
-        return Err(unsupported(function.location));
-    }
-    let block = &function.blocks[0];
-    if !matches!(block.terminator, Terminator::Return { .. }) {
-        return Err(unsupported(terminator_location(&block.terminator)));
+    for block in &function.blocks {
+        if matches!(
+            block.terminator,
+            Terminator::Match { .. } | Terminator::PropagateErr { .. }
+        ) {
+            return Err(unsupported(terminator_location(&block.terminator)));
+        }
+        for instruction in &block.instructions {
+            if matches!(
+                instruction,
+                Instruction::IterInit { .. } | Instruction::IterNext { .. }
+            ) {
+                return Err(unsupported(instruction_location(instruction)));
+            }
+        }
     }
     output.push_str(&format!(
         "fn yan_fn_{}(args: Vec<Value>) -> Result<Value, RuntimeError> {{\n",
@@ -102,19 +111,94 @@ fn render_function(output: &mut String, function: &yan_mir::Function) -> Result<
             Some(index) => format!("argument(&args, {index})"),
             None => "Value::Unit".to_owned(),
         };
-        output.push_str(&format!("let mut l_{} = {initializer};\n", (local.id).0));
-    }
-    for instruction in &block.instructions {
-        render_instruction(output, instruction)?;
-    }
-    if let Terminator::Return { value, .. } = &block.terminator {
-        let expression = match value {
-            Some(value) => render_operand(value),
-            None => "Value::Unit".to_owned(),
+        let binding = if local_is_stored(&function.blocks, local.id) {
+            "let mut"
+        } else {
+            "let"
         };
-        output.push_str(&format!("return Ok({expression});\n}}\n"));
+        output.push_str(&format!("{binding} l_{} = {initializer};\n", (local.id).0));
     }
+    let destinations = value_destinations(&function.blocks);
+    for destination in destinations {
+        output.push_str(&format!("let mut v_{destination} = Value::Unit;\n"));
+    }
+    let tracks_predecessor = has_phi(&function.blocks);
+    let block_binding = if has_jump(&function.blocks) {
+        "let mut"
+    } else {
+        "let"
+    };
+    output.push_str(&format!("{block_binding} block: u32 = 0;\n"));
+    if tracks_predecessor {
+        output.push_str("let mut previous_block: u32 = u32::MAX;\n");
+    }
+    output.push_str("loop { match block {\n");
+    for block in &function.blocks {
+        output.push_str(&format!("{} => {{\n", (block.id).0));
+        for instruction in &block.instructions {
+            render_instruction(output, instruction)?;
+        }
+        render_terminator(output, &block.terminator, tracks_predecessor);
+        output.push_str("}\n");
+    }
+    output.push_str("_ => return Err(RuntimeError::InvalidOperand), } }\n}\n");
     Ok(())
+}
+
+fn local_is_stored(blocks: &[yan_mir::BasicBlock], local: yan_mir::LocalId) -> bool {
+    blocks.iter().any(|block| {
+        block.instructions.iter().any(
+            |instruction| matches!(instruction, Instruction::StoreLocal { local: stored, .. } if *stored == local),
+        )
+    })
+}
+
+fn has_phi(blocks: &[yan_mir::BasicBlock]) -> bool {
+    blocks.iter().any(|block| {
+        block
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::Phi { .. }))
+    })
+}
+
+fn has_jump(blocks: &[yan_mir::BasicBlock]) -> bool {
+    blocks.iter().any(|block| {
+        matches!(
+            block.terminator,
+            Terminator::Goto { .. } | Terminator::Branch { .. }
+        )
+    })
+}
+
+fn value_destinations(blocks: &[yan_mir::BasicBlock]) -> Vec<u32> {
+    let mut destinations = Vec::new();
+    for block in blocks {
+        for instruction in &block.instructions {
+            let destination = match instruction {
+                Instruction::Assign { destination, .. }
+                | Instruction::Binary { destination, .. }
+                | Instruction::BuildString { destination, .. }
+                | Instruction::BuildList { destination, .. }
+                | Instruction::BuildMap { destination, .. }
+                | Instruction::BuildTuple { destination, .. }
+                | Instruction::TupleElement { destination, .. }
+                | Instruction::BuildStruct { destination, .. }
+                | Instruction::LoadField { destination, .. }
+                | Instruction::Call { destination, .. }
+                | Instruction::Phi { destination, .. } => Some(destination.0),
+                Instruction::StoreLocal { .. }
+                | Instruction::IterInit { .. }
+                | Instruction::IterNext { .. } => None,
+            };
+            if let Some(destination) = destination {
+                if !destinations.contains(&destination) {
+                    destinations.push(destination);
+                }
+            }
+        }
+    }
+    destinations
 }
 
 fn render_instruction(output: &mut String, instruction: &Instruction) -> Result<(), BackendError> {
@@ -250,14 +334,14 @@ fn render_instruction(output: &mut String, instruction: &Instruction) -> Result<
             location,
             ..
         } => {
-            let Some((_, value)) = incoming.first() else {
+            if incoming.is_empty() {
                 return Err(unsupported(*location));
-            };
-            value_definition(
-                output,
-                destination.0,
-                format!("Ok({})", render_operand(value)),
-            );
+            }
+            output.push_str(&format!("v_{} = match previous_block {{", destination.0));
+            for (predecessor, value) in incoming {
+                output.push_str(&format!(" {} => {},", predecessor.0, render_operand(value)));
+            }
+            output.push_str(" _ => return Err(RuntimeError::InvalidOperand), };\n");
         }
         Instruction::IterInit { location, .. } | Instruction::IterNext { location, .. } => {
             return Err(unsupported(*location))
@@ -267,13 +351,53 @@ fn render_instruction(output: &mut String, instruction: &Instruction) -> Result<
 }
 
 fn value_definition(output: &mut String, destination: u32, expression: String) {
-    output.push_str(&format!("let v_{destination} = {expression}?;\n"));
+    output.push_str(&format!("v_{destination} = {expression}?;\n"));
+}
+
+fn render_terminator(output: &mut String, terminator: &Terminator, tracks_predecessor: bool) {
+    match terminator {
+        Terminator::Goto { target, .. } => {
+            if tracks_predecessor {
+                output.push_str("previous_block = block; ");
+            }
+            output.push_str(&format!("block = {}; continue;\n", target.0));
+        }
+        Terminator::Branch {
+            condition,
+            then_block,
+            else_block,
+            ..
+        } => {
+            let predecessor = if tracks_predecessor {
+                "previous_block = block; "
+            } else {
+                ""
+            };
+            output.push_str(&format!(
+                "match {} {{ Value::Boolean(true) => {{ {predecessor}block = {}; continue; }}, Value::Boolean(false) => {{ {predecessor}block = {}; continue; }}, _ => return Err(RuntimeError::InvalidOperand), }}\n",
+                render_operand(condition), then_block.0, else_block.0
+            ));
+        }
+        Terminator::Return { value, .. } => {
+            let value = match value {
+                Some(value) => render_operand(value),
+                None => "Value::Unit".to_owned(),
+            };
+            output.push_str(&format!("return Ok({value});\n"));
+        }
+        Terminator::Unreachable { .. } => {
+            output.push_str("return Err(RuntimeError::InvalidOperand);\n")
+        }
+        Terminator::Match { .. } | Terminator::PropagateErr { .. } => {}
+    }
 }
 
 fn render_operand(operand: &Operand) -> String {
     match operand {
-        Operand::Local(id) => format!("l_{}", id.0),
-        Operand::Value(id) => format!("v_{}", id.0),
+        // 基本块调度循环可能再次进入同一段生成代码；复制不可变 Yan 值可避免 Rust
+        // 所有权移动阻止该控制流被编译，同时不改变 MIR 对操作数的值语义。
+        Operand::Local(id) => format!("l_{}.clone()", id.0),
+        Operand::Value(id) => format!("v_{}.clone()", id.0),
         Operand::Constant(value) => render_constant(value),
     }
 }
@@ -371,6 +495,25 @@ fn terminator_location(terminator: &Terminator) -> SourceLocation {
     }
 }
 
+fn instruction_location(instruction: &Instruction) -> SourceLocation {
+    match instruction {
+        Instruction::Assign { location, .. }
+        | Instruction::StoreLocal { location, .. }
+        | Instruction::Binary { location, .. }
+        | Instruction::BuildString { location, .. }
+        | Instruction::BuildList { location, .. }
+        | Instruction::BuildMap { location, .. }
+        | Instruction::BuildTuple { location, .. }
+        | Instruction::TupleElement { location, .. }
+        | Instruction::BuildStruct { location, .. }
+        | Instruction::LoadField { location, .. }
+        | Instruction::Call { location, .. }
+        | Instruction::Phi { location, .. }
+        | Instruction::IterInit { location, .. }
+        | Instruction::IterNext { location, .. } => *location,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -421,9 +564,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_control_flow_with_a_stable_mir_diagnostic() -> Result<(), String> {
+    fn rejects_match_control_flow_with_a_stable_mir_diagnostic() -> Result<(), String> {
         let program = verified_fixture(
-            "fn choose() -> int { if true { 1 } else { 2 } } fn main() -> unit { let value = choose() }",
+            "fn display_name(name: Option<string>) -> string { match name { Some(value) => value None => \"anonymous\" } } fn main() -> unit { let value = display_name(Some(\"yan\")) }",
         )?;
 
         match generate(&program) {
@@ -432,7 +575,7 @@ mod tests {
                 Ok(())
             }
             Err(error) => Err(format!("unexpected backend error: {error:?}")),
-            Ok(_) => Err("control-flow fixture must not generate in Task 3".to_owned()),
+            Ok(_) => Err("match control flow must remain unsupported in Task4b1".to_owned()),
         }
     }
 
@@ -475,5 +618,66 @@ mod tests {
         } else {
             Err("generated straightline project must compile".into())
         }
+    }
+
+    fn run_generated(source: &str) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        let program = verified_fixture(source)?;
+        let generated = generate(&program).map_err(|error| format!("{error:?}"))?;
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let project =
+            std::env::temp_dir().join(format!("yan-m15-branch-{unique}-{}", std::process::id()));
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir)?;
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../yan-runtime")
+            .canonicalize()?;
+        let runtime_path = runtime.to_string_lossy().replace('\\', "\\\\");
+        fs::write(
+            project.join("Cargo.toml"),
+            generated
+                .manifest_toml
+                .replace("__YAN_RUNTIME_PATH__", &runtime_path),
+        )?;
+        fs::write(source_dir.join("main.rs"), generated.main_rs)?;
+        let output = Command::new("cargo")
+            .arg("run")
+            .arg("--quiet")
+            .current_dir(&project)
+            .output()?;
+        fs::remove_dir_all(project)?;
+        Ok(output)
+    }
+
+    #[test]
+    fn generated_basic_blocks_execute_if_and_early_return_paths(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (source, expected) in [
+            (
+                "import yan.platform.console fn choose(flag: bool) -> int { if flag { 1 } else { 2 } } fn main() -> unit { console.println(choose(true)) }",
+                "1\n",
+            ),
+            (
+                "import yan.platform.console fn choose(flag: bool) -> int { if flag { 1 } else { 2 } } fn main() -> unit { console.println(choose(false)) }",
+                "2\n",
+            ),
+            (
+                "import yan.platform.console fn choose(flag: bool) -> int { if flag { return 1 } else { 2 } } fn main() -> unit { console.println(choose(true)) }",
+                "1\n",
+            ),
+        ] {
+            let output = run_generated(source)?;
+            assert!(
+                output.status.success(),
+                "generated program failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "generated program emitted stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stdout)?, expected);
+        }
+        Ok(())
     }
 }
