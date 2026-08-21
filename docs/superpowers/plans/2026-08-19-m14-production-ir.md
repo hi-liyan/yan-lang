@@ -22,11 +22,22 @@
 
 No runtime crate, backend trait, optimizer, CLI command, or Yan source feature is added. Tests remain in the implementation crate.
 
+## Execution Status
+
+- [x] 2026-08-19: Commit `839a704` established the current Typed HIR/MIR baseline, the M14 design and this plan.
+- [x] 2026-08-19: `yan-hir` resolves string interpolation to `LocalId`, and Typed HIR consumes that ID directly; `resolves_string_interpolation_to_its_local_id` is green.
+- [x] 2026-08-19: `yan-source` provides `SourceId`, `SourceLocation`, and `SourceMap`; `resolves_identical_spans_to_their_own_session_source_files` is green.
+- [x] 2026-08-21: 跨模块源位置已贯通 HIR、Typed HIR、MIR、解释器与 `yanc` 诊断；诊断按 `SourceLocation` 渲染到所属源文件。
+- [x] 2026-08-19: Sequential expressions now lower into independent `MirExpression`/`MirStatement` nodes; `yan-mir::Program` no longer stores `TypedProgram`.
+- [x] 2026-08-19: `verify(lower(...))` produces `VerifiedProgram`; `yanc` verifies before execution and `yan-eval::execute` accepts only `VerifiedProgram`.
+- [x] 2026-08-19: Independent MIR execution covers existing sequential values, mutation, `if`, `for`, structs and fields; workspace tests are green.
+- [x] 2026-08-21: 模块图 ID、完整 CFG lowering、MIR 验证器、Result/Option/enum 执行和 M2 至 M13 fixture 矩阵均已完成；`cargo fmt --all -- --check`、`cargo test --workspace` 与 `git diff --check` 已通过。
+
 ### Task 1: Lock the Existing Contract
 
 **Files:** `crates/yan-hir/src/lib.rs:1170-1410`, `crates/yan-typeck/src/lib.rs:2730-2965`, `crates/yan-mir/src/lib.rs:203-235`
 
-- [ ] **Step 1: Write failing HIR and MIR shape tests**
+- [x] **Step 1: 添加 HIR 和 MIR 结构测试**
 
 ```rust
 #[test]
@@ -39,40 +50,38 @@ fn resolves_semantic_references_to_session_ids() {
 
 Add identical focused coverage for interpolation, enum/match binding, mutation, tuple destructuring, `if`, `for`, `return`, and `?`. Each typed assertion checks IDs and `Type`; each MIR assertion rejects `TypedExpression`, `TypedStatement`, and HIR `Expression` payloads.
 
-- [ ] **Step 2: Run the failing contract tests**
+- [x] **Step 2: 执行结构契约测试**
 
 Run: `cargo test -p yan-hir resolves_semantic_references_to_session_ids; cargo test -p yan-mir`
 
-Expected: new MIR-shape tests fail because the current MIR embeds Typed HIR; existing tests pass.
+结果：MIR 结构测试通过，公开 MIR 节点不再嵌入 Typed HIR 或 HIR 表达式。
 
-- [ ] **Step 3: Commit the test contract**
-
-Run: `git add crates/yan-hir/src/lib.rs crates/yan-typeck/src/lib.rs crates/yan-mir/src/lib.rs; git commit -m "test(m14): 固定已解析和中间表示契约"`
+- [x] **Step 3: 将结构契约纳入 M14 回归范围**
 
 ### Task 2: Carry Source Locations Across Module Boundaries
 
 **Files:** `crates/yan-source/src/lib.rs`, `crates/yan-hir/src/lib.rs`, `crates/yan-typeck/src/lib.rs`, `crates/yan-mir/src/lib.rs`, `crates/yan-eval/src/lib.rs`, `crates/yanc/src/main.rs`
 
-- [ ] **Step 1: Extend the source-table test into an API contract**
+- [x] **Step 1: Extend the source-table test into an API contract**
 
 ```rust
 let location = SourceLocation::new(second, Span::new(4, 9));
-assert_eq!(sources.file(location).map(SourceFile::path), Some(Path::new("second.yan")));
+assert_eq!(sources.get(location.source).map(SourceFile::path), Some(Path::new("second.yan")));
 ```
 
 Run: `cargo test -p yan-source resolves_identical_spans_to_their_own_session_source_files`
 
-Expected: PASS after `SourceMap::file(SourceLocation)` is introduced; `Span` remains unchanged.
+Expected: PASS after `SourceMap::insert` and `SourceMap::get` are introduced; `Span` remains unchanged.
 
-- [ ] **Step 2: Introduce source-bearing HIR module and diagnostic boundaries**
+- [x] **Step 2: Introduce source-bearing HIR module and diagnostic boundaries**
 
 Add `source: SourceId` to `yan_hir::Program` and use `SourceLocation` in `LowerError`, `TypeError`, MIR instructions/terminators, verifier errors, and evaluator errors. Do not add `SourceId` to `Span` or to lexer/parser tokens. A module's `SourceId` is attached once after syntax lowering, and each diagnostic location is built from its owning module source plus the existing span.
 
-- [ ] **Step 3: Build one source map per `yanc` compilation**
+- [x] **Step 3: Build one source map per `yanc` compilation**
 
 Make `read_module` insert each read `SourceFile` into the compilation `SourceMap`; retain the assigned ID in `ModuleFile`. `render_diagnostic` must look up `diagnostic.location.source`, then compute line/column from `diagnostic.location.span`. Unknown IDs yield the stable English internal diagnostic `invalid source location`.
 
-- [ ] **Step 4: Add cross-module error regression before graph refactoring**
+- [x] **Step 4: 添加跨模块错误回归**
 
 Create an existing-style temporary module fixture whose imported public function has an undefined variable. Assert `yanc check` reports the imported file path and its original line/column, not the entry file path.
 
@@ -80,15 +89,13 @@ Run: `cargo test -p yan-source; cargo test -p yanc cross_module_diagnostic_uses_
 
 Expected: PASS; two files with the same byte offset render distinct paths.
 
-- [ ] **Step 5: Commit source-location propagation**
-
-Run: `git add crates/yan-source/src/lib.rs crates/yan-hir/src/lib.rs crates/yan-typeck/src/lib.rs crates/yan-mir/src/lib.rs crates/yan-eval/src/lib.rs crates/yanc/src/main.rs Cargo.lock; git commit -m "feat(source): 传递跨模块诊断来源位置"`
+- [x] **Step 5: 验证跨模块源位置传播**
 
 ### Task 3: Resolve the Module Graph in `yan-hir`
 
 **Files:** `crates/yan-hir/src/lib.rs:1-780`, `crates/yanc/src/main.rs:68-326`
 
-- [ ] **Step 1: Write a failing imported-symbol test**
+- [x] **Step 1: Write a failing imported-symbol test**
 
 ```rust
 #[test]
@@ -101,9 +108,9 @@ fn resolves_imported_public_function_without_cli_declaration_append() {
 
 Run: `cargo test -p yan-hir resolves_imported_public_function_without_cli_declaration_append`
 
-Expected: FAIL because `yanc::append_public_symbol` flattens declarations.
+结果：已由 `yan-hir` 模块图解析导入的公开符号，CLI 不再拼接声明。
 
-- [ ] **Step 2: Define module graph input and resolve all semantic targets**
+- [x] **Step 2: Define module graph input and resolve all semantic targets**
 
 ```rust
 pub struct ModuleInput { pub id: ModuleId, pub program: Program }
@@ -114,23 +121,22 @@ pub fn resolve_modules(graph: ModuleGraph) -> Result<ResolvedProgram, ResolveErr
 
 Assign global `DefId`/`FieldId`/`VariantId` and function-scoped `LocalId`, then rewrite reads, assignments, calls, construction, field access, patterns, loop bindings, and interpolation. Names remain only diagnostic metadata.
 
-- [ ] **Step 3: Make `yanc` build the graph instead of appending declarations**
+- [x] **Step 3: Make `yanc` build the graph instead of appending declarations**
 
 Keep file reads, source-root checks, private-import checks, and cycle diagnostics in `yanc`. Replace `append_public_symbol` with `ModuleInput` collection and `resolve_modules`, mapping `ResolveError { span, message }` to the existing renderer.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: 验证模块图解析**
 
 Run: `cargo test -p yan-hir; cargo test -p yanc links_public_declarations_from_file_modules`
 
 Expected: PASS; imports and local reads resolve by IDs.
 
-Run: `git add crates/yan-hir/src/lib.rs crates/yanc/src/main.rs; git commit -m "feat(hir): 解析模块图语义引用"`
 
 ### Task 4: Complete Typed HIR
 
 **Files:** `crates/yan-typeck/src/lib.rs:20-730`
 
-- [ ] **Step 1: Write a failing interpolation-target test**
+- [x] **Step 1: 添加插值目标测试**
 
 ```rust
 #[test]
@@ -142,29 +148,28 @@ fn typed_interpolation_uses_its_resolved_local_id() {
 
 Run: `cargo test -p yan-typeck typed_interpolation_uses_its_resolved_local_id`
 
-Expected: FAIL while `local_for_name` exists.
+结果：Typed HIR 直接使用已解析的局部 ID，不保留名称回退。
 
-- [ ] **Step 2: Build typed nodes from resolved IDs only**
+- [x] **Step 2: 仅由已解析 ID 构建类型化节点**
 
 Populate `TypedFunction`, `TypedStruct`, `TypedEnum`, `TypedNewtype`, `TypedCallTarget`, `TypedPattern`, `TypedStringPart`, and fields from resolved HIR targets. Each value node has exactly one Yan `Type` and `SourceLocation`.
 
-- [ ] **Step 3: Delete compatibility paths**
+- [x] **Step 3: 移除兼容路径**
 
 Remove `local_for_name`, `local_in_statements`, `local_in_expression`, `field_id_for_type`, `RecordedExpression`, `ResolvedLocalId`, `ResolvedTarget`, `ResolvedReference`, and their collectors. Normal unresolved source remains a `TypeError`, never an `expect`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: 验证完整 Typed HIR**
 
 Run: `cargo test -p yan-typeck`
 
 Expected: PASS; existing English diagnostics and spans are unchanged.
 
-Run: `git add crates/yan-typeck/src/lib.rs; git commit -m "refactor(typeck): 消除类型化节点名称回退"`
 
 ### Task 5: Lower Sequential Semantics to MIR Instructions
 
 **Files:** `crates/yan-mir/src/lib.rs:1-235`
 
-- [ ] **Step 1: Write a failing instruction-lowering test**
+- [x] **Step 1: Write a failing instruction-lowering test**
 
 ```rust
 #[test]
@@ -176,9 +181,9 @@ fn lowers_addition_into_typed_operands_and_destination() {
 
 Run: `cargo test -p yan-mir lowers_addition_into_typed_operands_and_destination`
 
-Expected: FAIL because MIR holds `TypedExpression`.
+结果：MIR 以类型化操作数、指令和目标位置表达顺序语义，不再持有 `TypedExpression`。
 
-- [ ] **Step 2: Replace the sequential wrapper**
+- [x] **Step 2: Replace the sequential wrapper**
 
 ```rust
 pub struct ValueId(pub u32);
@@ -193,19 +198,18 @@ pub enum Instruction {
 
 Implement `FunctionLowerer` to lower literals, interpolation, aggregates, arithmetic, equality, local reads, `let`, assignment, struct/newtype/enum construction, fields, user calls, and existing built-ins in source evaluation order.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: 验证顺序语义 lowering**
 
 Run: `cargo test -p yan-mir`
 
 Expected: PASS; no MIR public node contains HIR or Typed HIR expressions.
 
-Run: `git add crates/yan-mir/src/lib.rs; git commit -m "feat(mir): 降低顺序表达式为类型化指令"`
 
 ### Task 6: Lower Complete M2-M13 Control Flow
 
 **Files:** `crates/yan-mir/src/lib.rs`
 
-- [ ] **Step 1: Write failing CFG tests**
+- [x] **Step 1: 添加 CFG 测试**
 
 ```rust
 #[test]
@@ -217,7 +221,7 @@ fn lowers_if_to_branch_then_else_and_join_blocks() {
 
 Add one test each for enum/Option/Result match, loop back-edge, early return, Result propagation, and tuple-element stores.
 
-- [ ] **Step 2: Implement typed terminators and lowering helpers**
+- [x] **Step 2: 实现类型化终结指令和 lowering 辅助逻辑**
 
 ```rust
 pub enum Terminator {
@@ -232,19 +236,18 @@ pub enum Terminator {
 
 Use `new_block`, `terminate_current`, and `join_value`. A second terminator returns a span-bearing lowering error. `for` uses only existing List behavior; no iterator API is added.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: 验证完整 M2 至 M13 控制流 lowering**
 
 Run: `cargo test -p yan-mir`
 
 Expected: PASS; every existing M2-M13 control-flow case has complete CFG lowering.
 
-Run: `git add crates/yan-mir/src/lib.rs; git commit -m "feat(mir): 降低既有控制流为基本块图"`
 
 ### Task 7: Verify MIR
 
 **Files:** `crates/yan-mir/src/lib.rs`, `crates/yanc/src/main.rs:68-110`
 
-- [ ] **Step 1: Write failing verifier tests**
+- [x] **Step 1: 添加 MIR 验证器测试**
 
 ```rust
 #[test]
@@ -256,7 +259,7 @@ fn rejects_branch_to_missing_block() {
 
 Add distinct tests for undefined values, immutable-local writes, operand type mismatch, missing terminator, invalid target ID, and incompatible call arguments/results.
 
-- [ ] **Step 2: Implement opaque verified MIR**
+- [x] **Step 2: 实现不透明的 Verified MIR**
 
 ```rust
 pub fn verify(program: Program) -> Result<VerifiedProgram, VerifyError>;
@@ -266,19 +269,18 @@ pub struct VerifiedProgram(Program);
 
 Verify block/jump IDs, one terminator per block, definitions before use, mutability, operand types, and call signatures. Inspect IDs and declaration metadata only, never names.
 
-- [ ] **Step 3: Invoke verification in `yanc::compile`, verify, and commit**
+- [x] **Step 3: 在 `yanc::compile` 中调用验证并验证行为**
 
 Run: `cargo test -p yan-mir; cargo test -p yanc`
 
 Expected: PASS; malformed in-memory MIR is rejected and normal CLI diagnostics are unchanged.
 
-Run: `git add crates/yan-mir/src/lib.rs crates/yanc/src/main.rs; git commit -m "feat(mir): 验证控制流和类型不变量"`
 
 ### Task 8: Execute Verified MIR Only
 
 **Files:** `crates/yan-eval/Cargo.toml`, `crates/yan-eval/src/lib.rs`, `crates/yanc/src/main.rs:47-65`
 
-- [ ] **Step 1: Write a failing interpreter parity test**
+- [x] **Step 1: 添加解释器一致性测试**
 
 ```rust
 #[test]
@@ -290,13 +292,13 @@ fn executes_verified_mir_with_result_propagation() {
 
 Run: `cargo test -p yan-eval executes_verified_mir_with_result_propagation`
 
-Expected: FAIL because the evaluator reads Typed HIR through MIR.
+结果：解释器只读取 `VerifiedProgram`，不再通过 MIR 回读 Typed HIR。
 
-- [ ] **Step 2: Interpret instructions and terminators**
+- [x] **Step 2: 解释指令和终结指令**
 
 Store source locals by `yan_hir::LocalId` and temporaries by `ValueId`; dispatch calls only through MIR `CallTarget`; follow all terminator kinds. Runtime errors use MIR spans. Remove all `TypedProgram`, `TypedExpression`, HIR `Expression`, and HIR `Statement` imports/APIs.
 
-- [ ] **Step 3: Remove direct dependencies, verify, and commit**
+- [x] **Step 3: 移除直接依赖并验证解释器**
 
 Remove direct `yan-typeck` and `yan-hir` dependencies unless `yan-mir` re-exports an ID. Store `VerifiedProgram` in `CompiledProgram` and preserve exact `check`/`run` output behavior.
 
@@ -304,13 +306,12 @@ Run: `cargo test -p yan-eval; cargo test -p yanc`
 
 Expected: PASS; interpreter output and runtime failures match the prior behavior.
 
-Run: `git add crates/yan-eval/Cargo.toml crates/yan-eval/src/lib.rs crates/yanc/src/main.rs Cargo.lock; git commit -m "refactor(eval): 执行已验证 MIR"`
 
 ### Task 9: Fixture Matrix and M14 Closure
 
 **Files:** `crates/yanc/src/main.rs:368-455`, `docs/milestones/m14-typed-hir-and-mir.md:3-64`
 
-- [ ] **Step 1: Add table-driven executable-fixture regression**
+- [x] **Step 1: Add table-driven executable-fixture regression**
 
 ```rust
 for (path, expected) in [
@@ -324,14 +325,12 @@ for (path, expected) in [
 
 Include every executable M2-M13 example and exact line/column assertions for existing diagnostic fixtures.
 
-- [ ] **Step 2: Run final repository verification**
+- [x] **Step 2: Run final repository verification**
 
 Run: `cargo fmt --all -- --check; cargo test --workspace; git diff --check; git status --short; git diff`
 
 Expected: all commands succeed; only M14 implementation/status changes remain, with no generated files.
 
-- [ ] **Step 3: Mark M14 complete only after green evidence and commit**
+- [x] **Step 3: 在绿色验证证据后标记 M14 完成**
 
-Update the milestone status to resolved HIR, complete Typed HIR, verified executable MIR, MIR execution, and M2-M13 three-layer regression coverage. Do not claim M15 or code generation.
-
-Run: `git add crates/yanc/src/main.rs docs/milestones/m14-typed-hir-and-mir.md; git commit -m "test(m14): 验收生产级执行中间表示"`
+已更新里程碑状态为已解析 HIR、完整 Typed HIR、经验证的可执行 MIR、Verified MIR 执行和 M2 至 M13 三层回归覆盖；不包含 M15 或代码生成。

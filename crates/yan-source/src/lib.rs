@@ -144,7 +144,10 @@ mod tests {
 
         let location = SourceLocation::new(second, Span::new(4, 9));
 
-        assert_eq!(sources.get(location.source).map(SourceFile::path), Some(std::path::Path::new("second.yan")));
+        assert_eq!(
+            sources.get(location.source).map(SourceFile::path),
+            Some(std::path::Path::new("second.yan"))
+        );
         assert_ne!(first, second);
     }
 }

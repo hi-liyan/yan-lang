@@ -1,6 +1,6 @@
 # M14：已类型化 HIR 与最小 MIR
 
-状态：实施中（已建立 TypedProgram 与最小 MIR 程序边界；名称 ID、完整 Typed HIR、可执行控制流 MIR、MIR 验证与解释器迁移待完成）
+状态：已完成（已解析 HIR、完整 Typed HIR、经验证的可执行控制流 MIR、仅执行 Verified MIR 的解释器、跨模块源位置诊断，以及 M2 至 M13 的 HIR/Typed HIR/MIR 三层回归均已完成验证）
 范围：在不增加 Yan 表面语法、标准库、CLI 命令或代码生成的前提下，建立已解析 HIR、Typed HIR 与可执行 MIR，提供 MIR 验证，并迁移解释器消费稳定的 MIR。
 
 ## 目标

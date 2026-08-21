@@ -1,18 +1,21 @@
 //! M3 HIR 类型检查与函数调用边界验证。
 
-use std::collections::HashMap;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 use yan_hir::{
-    DefId, Expression, Field, FieldId, Function, LocalId, Program, Statement, StringPart, Type,
-    VariantId,
+    CallTarget as HirCallTarget, DefId, Expression, Field, FieldId, Function, LocalId, Program,
+    Statement, StringPart, Type, VariantId,
 };
-use yan_source::Span;
+use yan_source::{SourceId, SourceLocation, Span};
 
 /// 类型检查发现的源程序错误。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeError {
     /// 错误对应的源文件区间。
-    pub span: Span,
+    pub location: SourceLocation,
     /// 面向用户的稳定错误原因。
     pub message: String,
 }
@@ -23,6 +26,8 @@ pub struct TypeError {
 /// 和解释执行只能消费本类型，避免绕过类型检查重新使用原始程序。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedProgram {
+    /// 当前已类型化模块所属的编译会话源文件。
+    pub source: SourceId,
     /// 运行时和 MIR lowering 消费的已类型化函数体。
     pub functions: Vec<TypedFunction>,
     /// 已验证的结构体字段类型与默认值。
@@ -36,6 +41,8 @@ pub struct TypedProgram {
 /// 一个已验证、可直接 lowering 的函数定义。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedFunction {
+    /// 函数定义所属的编译会话源文件。
+    pub source: SourceId,
     /// 函数声明的稳定标识。
     pub id: DefId,
     /// 仅供诊断和调试显示的源函数名称。
@@ -59,6 +66,8 @@ pub struct TypedLocal {
     pub name: String,
     /// 声明位置。
     pub span: Span,
+    /// 声明所属源文件与文件内区间。
+    pub location: SourceLocation,
     /// 已确定的 Yan 类型。
     pub ty: Type,
     /// 是否允许赋值覆盖。
@@ -69,11 +78,30 @@ pub struct TypedLocal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TypedStatement {
     /// 元组解构并初始化多个局部位置。
-    Destructure { locals: Vec<TypedLocal>, value: TypedExpression },
+    Destructure {
+        /// 按元组元素顺序排列的已验证局部绑定。
+        locals: Vec<TypedLocal>,
+        /// 产生待解构元组值的已类型化表达式。
+        value: TypedExpression,
+    },
     /// 初始化一个局部位置。
-    Let { local: TypedLocal, value: TypedExpression },
+    Let {
+        /// 本语句声明且完成类型验证的局部绑定。
+        local: TypedLocal,
+        /// 用于初始化该局部绑定的已类型化表达式。
+        value: TypedExpression,
+    },
     /// 覆盖类型检查已确认可变的局部位置。
-    Assign { local: LocalId, value: TypedExpression, span: Span },
+    Assign {
+        /// 被覆盖局部绑定的稳定函数内 ID。
+        local: LocalId,
+        /// 已确认与局部声明类型一致的新值表达式。
+        value: TypedExpression,
+        /// 赋值目标名称在所属源文件内的区间。
+        span: Span,
+        /// 赋值目标所属源文件与文件内区间。
+        location: SourceLocation,
+    },
     /// 执行表达式；末尾表达式由 MIR lowering 转换为函数返回值。
     Expression(TypedExpression),
 }
@@ -83,6 +111,8 @@ pub enum TypedStatement {
 pub struct TypedExpression {
     /// 表达式在源文件中的位置。
     pub span: Span,
+    /// 表达式所属源文件与文件内区间。
+    pub location: SourceLocation,
     /// 表达式的确定 Yan 类型。
     pub ty: Type,
     /// 不再引用 HIR `Expression` 的可执行节点。
@@ -107,11 +137,30 @@ pub enum TypedExpressionKind {
     /// 元组构造。
     Tuple(Vec<TypedExpression>),
     /// 已解析的模式分派。
-    Match { target: Box<TypedExpression>, arms: Vec<TypedMatchArm> },
+    Match {
+        /// 产生被匹配 enum、Option 或 Result 值的表达式。
+        target: Box<TypedExpression>,
+        /// 已完成穷尽性、载荷绑定与结果类型验证的分支。
+        arms: Vec<TypedMatchArm>,
+    },
     /// 条件分支。
-    If { condition: Box<TypedExpression>, then_statements: Vec<TypedStatement>, else_statements: Vec<TypedStatement> },
+    If {
+        /// 已确认类型为 `bool` 的条件表达式。
+        condition: Box<TypedExpression>,
+        /// 条件成立时执行的已类型化语句块。
+        then_statements: Vec<TypedStatement>,
+        /// 条件不成立时执行的已类型化语句块。
+        else_statements: Vec<TypedStatement>,
+    },
     /// 列表循环。
-    For { local: TypedLocal, iterable: Box<TypedExpression>, statements: Vec<TypedStatement> },
+    For {
+        /// 每次迭代接收列表元素的只读局部绑定。
+        local: TypedLocal,
+        /// 已确认类型为 `List<T>` 的被遍历表达式。
+        iterable: Box<TypedExpression>,
+        /// 在循环局部作用域内执行的已类型化语句块。
+        statements: Vec<TypedStatement>,
+    },
     /// 函数返回。
     Return(Box<TypedExpression>),
     /// Result 错误传播。
@@ -121,7 +170,12 @@ pub enum TypedExpressionKind {
     /// Option 空值构造。
     None,
     /// 已解析调用或固定内建调用。
-    Call { target: TypedCallTarget, arguments: Vec<TypedExpression> },
+    Call {
+        /// 名称解析阶段确定、类型检查阶段验证的调用目标。
+        target: TypedCallTarget,
+        /// 按声明参数顺序排列的已类型化实参。
+        arguments: Vec<TypedExpression>,
+    },
     /// 整数加法。
     Add(Box<TypedExpression>, Box<TypedExpression>),
     /// 整数乘法。
@@ -129,9 +183,19 @@ pub enum TypedExpressionKind {
     /// 同类型基础值相等比较。
     Equal(Box<TypedExpression>, Box<TypedExpression>),
     /// 已解析结构体构造。
-    Struct { structure: DefId, fields: Vec<(FieldId, TypedExpression)> },
+    Struct {
+        /// 被构造结构体声明的编译会话稳定 ID。
+        structure: DefId,
+        /// 按源码给出顺序排列的字段 ID 与已类型化字段值。
+        fields: Vec<(FieldId, TypedExpression)>,
+    },
     /// 已解析字段读取。
-    Field { target: Box<TypedExpression>, field: FieldId },
+    Field {
+        /// 产生结构体值的已类型化目标表达式。
+        target: Box<TypedExpression>,
+        /// 被读取字段声明的编译会话稳定 ID。
+        field: FieldId,
+    },
     /// 无载荷 enum 构造。
     Variant(VariantId),
 }
@@ -260,12 +324,16 @@ pub fn check_library(program: &Program) -> Result<TypedProgram, TypeError> {
 }
 
 fn check_program(program: &Program, require_main: bool) -> Result<TypedProgram, TypeError> {
-    let console_imported = check_imports(program)?;
-    let signatures = collect_signatures(program, require_main)?;
+    let console_imported =
+        check_imports(program).map_err(|error| error.with_source(program.source))?;
+    let signatures = collect_signatures(program, require_main)
+        .map_err(|error| error.with_source(program.source))?;
     let declarations = collect_declarations(program)?;
-    check_no_recursion(program)?;
+    check_no_recursion(program).map_err(|error| error.with_source(program.source))?;
     for function in &program.functions {
-        check_function(function, &signatures, &declarations, console_imported)?;
+        declarations.set_source(function.source);
+        check_function(function, &signatures, &declarations, console_imported)
+            .map_err(|error| error.with_source(function.source))?;
     }
     build_typed_program(program, &signatures, &declarations, console_imported)
 }
@@ -280,7 +348,16 @@ fn build_typed_program(
     let functions = program
         .functions
         .iter()
-        .map(|function| build_typed_function(function, program, signatures, declarations, console_imported))
+        .map(|function| {
+            build_typed_function(
+                function,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+            )
+            .map_err(|error| error.with_source(function.source))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let structs = program
         .structs
@@ -298,6 +375,7 @@ fn build_typed_program(
                             .as_ref()
                             .map(|value| {
                                 build_expression(
+                                    field.source,
                                     value,
                                     &HashMap::new(),
                                     program,
@@ -344,6 +422,7 @@ fn build_typed_program(
         })
         .collect();
     Ok(TypedProgram {
+        source: program.source,
         functions,
         structs,
         enums,
@@ -366,6 +445,7 @@ fn build_typed_function(
             id: parameter.id,
             name: parameter.name.clone(),
             span: parameter.name_span,
+            location: SourceLocation::new(function.source, parameter.name_span),
             ty: parameter.ty.clone(),
             mutable: false,
         })
@@ -377,6 +457,7 @@ fn build_typed_function(
             (
                 parameter.name.clone(),
                 Binding {
+                    id: parameter.id,
                     ty: parameter.ty.clone(),
                     mutable: false,
                 },
@@ -384,6 +465,7 @@ fn build_typed_function(
         })
         .collect::<HashMap<_, _>>();
     let statements = build_statements(
+        function.source,
         &function.statements,
         &mut bindings,
         program,
@@ -392,6 +474,7 @@ fn build_typed_function(
         console_imported,
     )?;
     Ok(TypedFunction {
+        source: function.source,
         id: function.id,
         name: function.name.clone(),
         span: function.name_span,
@@ -403,6 +486,7 @@ fn build_typed_function(
 
 /// 在维护类型绑定环境的同时转换一个语句块。
 fn build_statements(
+    source: SourceId,
     statements: &[Statement],
     bindings: &mut HashMap<String, Binding>,
     program: &Program,
@@ -413,10 +497,26 @@ fn build_statements(
     let mut typed = Vec::new();
     for statement in statements {
         match statement {
-            Statement::Destructure { locals, names, value } => {
-                let value = build_expression(value, bindings, program, signatures, declarations, console_imported, None)?;
+            Statement::Destructure {
+                locals,
+                names,
+                value,
+            } => {
+                let value = build_expression(
+                    source,
+                    value,
+                    bindings,
+                    program,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    None,
+                )?;
                 let Type::Tuple(elements) = value.ty.clone() else {
-                    return Err(error(value.span, "type-checked destructuring requires a tuple value"));
+                    return Err(error(
+                        value.span,
+                        "type-checked destructuring requires a tuple value",
+                    ));
                 };
                 let locals = names
                     .iter()
@@ -426,30 +526,99 @@ fn build_statements(
                         id: *id,
                         name: name.clone(),
                         span: *span,
+                        location: SourceLocation::new(source, *span),
                         ty,
                         mutable: false,
                     })
                     .collect::<Vec<_>>();
                 for local in &locals {
-                    bindings.insert(local.name.clone(), Binding { ty: local.ty.clone(), mutable: false });
+                    bindings.insert(
+                        local.name.clone(),
+                        Binding {
+                            id: local.id,
+                            ty: local.ty.clone(),
+                            mutable: false,
+                        },
+                    );
                 }
                 typed.push(TypedStatement::Destructure { locals, value });
             }
-            Statement::Let { local, mutable, name, name_span, annotation, value } => {
-                let value = build_expression(value, bindings, program, signatures, declarations, console_imported, annotation.as_ref())?;
+            Statement::Let {
+                local,
+                mutable,
+                name,
+                name_span,
+                annotation,
+                value,
+            } => {
+                let value = build_expression(
+                    source,
+                    value,
+                    bindings,
+                    program,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    annotation.as_ref(),
+                )?;
                 let ty = annotation.clone().unwrap_or_else(|| value.ty.clone());
-                let local = TypedLocal { id: *local, name: name.clone(), span: *name_span, ty: ty.clone(), mutable: *mutable };
-                bindings.insert(name.clone(), Binding { ty, mutable: *mutable });
+                let local = TypedLocal {
+                    id: *local,
+                    name: name.clone(),
+                    span: *name_span,
+                    location: SourceLocation::new(source, *name_span),
+                    ty: ty.clone(),
+                    mutable: *mutable,
+                };
+                bindings.insert(
+                    name.clone(),
+                    Binding {
+                        id: local.id,
+                        ty,
+                        mutable: *mutable,
+                    },
+                );
                 typed.push(TypedStatement::Let { local, value });
             }
-            Statement::Assign { local, name_span, value, .. } => {
-                let expected = bindings.get(match statement { Statement::Assign { name, .. } => name, _ => unreachable!() }).map(|binding| &binding.ty);
-                let value = build_expression(value, bindings, program, signatures, declarations, console_imported, expected)?;
-                typed.push(TypedStatement::Assign { local: *local, value, span: *name_span });
+            Statement::Assign {
+                local,
+                name_span,
+                value,
+                ..
+            } => {
+                let expected = bindings
+                    .values()
+                    .find(|binding| binding.id == *local)
+                    .map(|binding| &binding.ty);
+                let value = build_expression(
+                    source,
+                    value,
+                    bindings,
+                    program,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    expected,
+                )?;
+                typed.push(TypedStatement::Assign {
+                    local: *local,
+                    value,
+                    span: *name_span,
+                    location: SourceLocation::new(source, *name_span),
+                });
             }
-            Statement::Expression(value) => typed.push(TypedStatement::Expression(build_expression(
-                value, bindings, program, signatures, declarations, console_imported, None,
-            )?)),
+            Statement::Expression(value) => {
+                typed.push(TypedStatement::Expression(build_expression(
+                    source,
+                    value,
+                    bindings,
+                    program,
+                    signatures,
+                    declarations,
+                    console_imported,
+                    None,
+                )?))
+            }
         }
     }
     Ok(typed)
@@ -457,6 +626,7 @@ fn build_statements(
 
 /// 将单个已验证 HIR 表达式转换为自包含 Typed HIR 节点。
 fn build_expression(
+    source: SourceId,
     expression: &Expression,
     bindings: &HashMap<String, Binding>,
     program: &Program,
@@ -467,9 +637,13 @@ fn build_expression(
 ) -> Result<TypedExpression, TypeError> {
     let span = expression.span();
     let ty = if matches!(expression, Expression::Variable { name, .. } if name == "None") {
-        expected.cloned().ok_or_else(|| error(span, "`None` requires an Option type context"))?
+        expected
+            .cloned()
+            .ok_or_else(|| error(span, "`None` requires an Option type context"))?
     } else {
-        type_of(expression, bindings, signatures, declarations, console_imported)?
+        declarations
+            .checked_type(source, span)
+            .ok_or_else(|| error_at(source, span, "type-checked expression has no recorded type"))?
     };
     let kind = match expression {
         Expression::Integer { value, .. } => TypedExpressionKind::Integer(*value),
@@ -481,7 +655,6 @@ fn build_expression(
                 .map(|part| match part {
                     StringPart::Text(text) => Ok(TypedStringPart::Text(text.clone())),
                     StringPart::Variable { local, name, span } => local
-                        .filter(|_| bindings.contains_key(name))
                         .map(TypedStringPart::Local)
                         .ok_or_else(|| error(*span, format!("undefined variable `{name}`"))),
                 })
@@ -490,23 +663,68 @@ fn build_expression(
         Expression::List { values, .. } => TypedExpressionKind::List(
             values
                 .iter()
-                .map(|value| build_expression(value, bindings, program, signatures, declarations, console_imported, None))
+                .map(|value| {
+                    build_expression(
+                        source,
+                        value,
+                        bindings,
+                        program,
+                        signatures,
+                        declarations,
+                        console_imported,
+                        None,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         Expression::Map { entries, .. } => TypedExpressionKind::Map(
             entries
                 .iter()
-                .map(|entry| Ok((entry.key.clone(), build_expression(&entry.value, bindings, program, signatures, declarations, console_imported, None)?)))
+                .map(|entry| {
+                    Ok((
+                        entry.key.clone(),
+                        build_expression(
+                            source,
+                            &entry.value,
+                            bindings,
+                            program,
+                            signatures,
+                            declarations,
+                            console_imported,
+                            None,
+                        )?,
+                    ))
+                })
                 .collect::<Result<Vec<_>, TypeError>>()?,
         ),
         Expression::Tuple { values, .. } => TypedExpressionKind::Tuple(
             values
                 .iter()
-                .map(|value| build_expression(value, bindings, program, signatures, declarations, console_imported, None))
+                .map(|value| {
+                    build_expression(
+                        source,
+                        value,
+                        bindings,
+                        program,
+                        signatures,
+                        declarations,
+                        console_imported,
+                        None,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         Expression::Match { target, arms, .. } => {
-            let typed_target = build_expression(target, bindings, program, signatures, declarations, console_imported, None)?;
+            let typed_target = build_expression(
+                source,
+                target,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                None,
+            )?;
             let target_type = typed_target.ty.clone();
             let arms = arms
                 .iter()
@@ -518,524 +736,66 @@ fn build_expression(
                             "None" => TypedPattern::None,
                             "Ok" => TypedPattern::Ok,
                             "Err" => TypedPattern::Err,
-                            _ => return Err(error(arm.pattern.variant_span, "type-checked match has an unresolved variant")),
+                            _ => {
+                                return Err(error(
+                                    arm.pattern.variant_span,
+                                    "type-checked match has an unresolved variant",
+                                ))
+                            }
                         },
                     };
                     let mut arm_bindings = bindings.clone();
                     let binding = match (&arm.pattern.binding, arm.pattern.binding_local) {
                         (Some((name, span)), Some(id)) => {
                             let ty = match_binding_type(&target_type, &arm.pattern, declarations)
-                                .ok_or_else(|| error(*span, "type-checked match binding has no payload type"))?;
-                            arm_bindings.insert(name.clone(), Binding { ty: ty.clone(), mutable: false });
-                            Some(TypedLocal { id, name: name.clone(), span: *span, ty, mutable: false })
+                                .ok_or_else(|| {
+                                error(*span, "type-checked match binding has no payload type")
+                            })?;
+                            arm_bindings.insert(
+                                name.clone(),
+                                Binding {
+                                    id,
+                                    ty: ty.clone(),
+                                    mutable: false,
+                                },
+                            );
+                            Some(TypedLocal {
+                                id,
+                                name: name.clone(),
+                                span: *span,
+                                location: SourceLocation::new(source, *span),
+                                ty,
+                                mutable: false,
+                            })
                         }
                         (None, None) => None,
-                        _ => return Err(error(arm.value.span(), "type-checked match binding is inconsistent")),
+                        _ => {
+                            return Err(error(
+                                arm.value.span(),
+                                "type-checked match binding is inconsistent",
+                            ))
+                        }
                     };
-                    let value = build_expression(&arm.value, &arm_bindings, program, signatures, declarations, console_imported, None)?;
-                    Ok(TypedMatchArm { pattern, binding, value })
+                    let value = build_expression(
+                        source,
+                        &arm.value,
+                        &arm_bindings,
+                        program,
+                        signatures,
+                        declarations,
+                        console_imported,
+                        None,
+                    )?;
+                    Ok(TypedMatchArm {
+                        pattern,
+                        binding,
+                        value,
+                    })
                 })
                 .collect::<Result<Vec<_>, TypeError>>()?;
-            TypedExpressionKind::Match { target: Box::new(typed_target), arms }
-        }
-        Expression::If { condition, then_statements, else_statements, .. } => {
-            let condition = Box::new(build_expression(condition, bindings, program, signatures, declarations, console_imported, Some(&Type::Bool))?);
-            let mut then_bindings = bindings.clone();
-            let then_statements = build_statements(then_statements, &mut then_bindings, program, signatures, declarations, console_imported)?;
-            let mut else_bindings = bindings.clone();
-            let else_statements = build_statements(else_statements, &mut else_bindings, program, signatures, declarations, console_imported)?;
-            TypedExpressionKind::If { condition, then_statements, else_statements }
-        }
-        Expression::For { local, name, name_span, iterable, statements, .. } => {
-            let iterable = Box::new(build_expression(iterable, bindings, program, signatures, declarations, console_imported, None)?);
-            let Type::List(element) = iterable.ty.clone() else {
-                return Err(error(iterable.span, "type-checked for must iterate over a List value"));
-            };
-            let local = TypedLocal { id: *local, name: name.clone(), span: *name_span, ty: *element, mutable: false };
-            let mut loop_bindings = bindings.clone();
-            loop_bindings.insert(name.clone(), Binding { ty: local.ty.clone(), mutable: false });
-            let statements = build_statements(statements, &mut loop_bindings, program, signatures, declarations, console_imported)?;
-            TypedExpressionKind::For { local, iterable, statements }
-        }
-        Expression::Return { value, .. } => TypedExpressionKind::Return(Box::new(build_expression(value, bindings, program, signatures, declarations, console_imported, None)?)),
-        Expression::Try { value, .. } => TypedExpressionKind::Try(Box::new(build_expression(value, bindings, program, signatures, declarations, console_imported, None)?)),
-        Expression::Variable { name, local, .. } if name == "None" => TypedExpressionKind::None,
-        Expression::Variable { name, local, .. } => TypedExpressionKind::Local(
-            (*local)
-                .or_else(|| local_for_name(program, name))
-                .ok_or_else(|| error(span, format!("undefined variable `{name}`")))?,
-        ),
-        Expression::Call { path, arguments, function, .. } => {
-            let target = typed_call_target(path, *function, program, span)?;
-            let expected_arguments = expected_argument_types(&target, path, program, signatures);
-            let arguments = arguments
-                .iter()
-                .enumerate()
-                .map(|(index, argument)| build_expression(argument, bindings, program, signatures, declarations, console_imported, expected_arguments.get(index).copied()))
-                .collect::<Result<Vec<_>, _>>()?;
-            TypedExpressionKind::Call { target, arguments }
-        }
-        Expression::Add { left, right, .. } => TypedExpressionKind::Add(
-            Box::new(build_expression(left, bindings, program, signatures, declarations, console_imported, Some(&Type::Int))?),
-            Box::new(build_expression(right, bindings, program, signatures, declarations, console_imported, Some(&Type::Int))?),
-        ),
-        Expression::Multiply { left, right, .. } => TypedExpressionKind::Multiply(
-            Box::new(build_expression(left, bindings, program, signatures, declarations, console_imported, Some(&Type::Int))?),
-            Box::new(build_expression(right, bindings, program, signatures, declarations, console_imported, Some(&Type::Int))?),
-        ),
-        Expression::Equal { left, right, .. } => TypedExpressionKind::Equal(
-            Box::new(build_expression(left, bindings, program, signatures, declarations, console_imported, None)?),
-            Box::new(build_expression(right, bindings, program, signatures, declarations, console_imported, None)?),
-        ),
-        Expression::StructLiteral { structure, name, fields, .. } => TypedExpressionKind::Struct {
-            structure: program
-                .structs
-                .iter()
-                .find(|candidate| candidate.name == *name)
-                .map(|candidate| candidate.id)
-                .unwrap_or(*structure),
-            fields: fields
-                .iter()
-                .map(|field| {
-                    let field_id = field.field_id.or_else(|| {
-                        program
-                            .structs
-                            .iter()
-                            .find(|candidate| candidate.name == *name)
-                            .and_then(|candidate| {
-                                candidate
-                                    .fields
-                                    .iter()
-                                    .find(|candidate| candidate.name == field.name)
-                            })
-                            .map(|candidate| candidate.id)
-                    }).ok_or_else(|| error(field.name_span, "type-checked struct field has no ID"))?;
-                    Ok((field_id, build_expression(&field.value, bindings, program, signatures, declarations, console_imported, None)?))
-                })
-                .collect::<Result<Vec<_>, TypeError>>()?,
-        },
-        Expression::FieldAccess { target, field_id, variant, .. } if let Some(variant) = variant => TypedExpressionKind::Variant(*variant),
-        Expression::FieldAccess { target, field_id, .. } => {
-            let target = Box::new(build_expression(target, bindings, program, signatures, declarations, console_imported, None)?);
-            let field = (*field_id).or_else(|| field_id_for_type(program, &target.ty, expression).copied())
-                .ok_or_else(|| error(span, "type-checked field access has no field ID"))?;
-            TypedExpressionKind::Field { target, field }
-        }
-    };
-    Ok(TypedExpression { span, ty, kind })
-}
-
-/// 根据稳定函数内局部 ID 还原绑定；该辅助仅用于将旧 HIR 的字符串插值转入 Typed HIR。
-fn local_for_name(program: &Program, name: &str) -> Option<LocalId> {
-    program.functions.iter().find_map(|function| {
-        function
-            .parameters
-            .iter()
-            .find(|parameter| parameter.name == name)
-            .map(|parameter| parameter.id)
-            .or_else(|| local_in_statements(&function.statements, name))
-    })
-}
-
-/// 在 HIR 的已解析绑定声明中定位局部 ID；Typed HIR 不保留这个按名称的回退路径。
-fn local_in_statements(statements: &[Statement], name: &str) -> Option<LocalId> {
-    statements.iter().find_map(|statement| match statement {
-        Statement::Let { local, name: candidate, .. } if candidate == name => Some(*local),
-        Statement::Destructure { locals, names, .. } => names
-            .iter()
-            .position(|(candidate, _)| candidate == name)
-            .and_then(|index| locals.get(index).copied()),
-        Statement::Expression(expression) => local_in_expression(expression, name),
-        Statement::Let { value, .. }
-        | Statement::Assign { value, .. }
-        | Statement::Destructure { value, .. } => local_in_expression(value, name),
-        _ => None,
-    })
-}
-
-fn local_in_expression(expression: &Expression, name: &str) -> Option<LocalId> {
-    match expression {
-        Expression::If { then_statements, else_statements, .. } => local_in_statements(then_statements, name).or_else(|| local_in_statements(else_statements, name)),
-        Expression::For { local, name: candidate, statements, .. } => (candidate == name).then_some(*local).or_else(|| local_in_statements(statements, name)),
-        Expression::Match { arms, .. } => arms.iter().find_map(|arm| {
-            arm.pattern.binding.as_ref().filter(|(candidate, _)| candidate == name).and(arm.pattern.binding_local).or_else(|| local_in_expression(&arm.value, name))
-        }),
-        _ => None,
-    }
-}
-
-fn typed_call_target(path: &[String], function: Option<DefId>, program: &Program, span: Span) -> Result<TypedCallTarget, TypeError> {
-    match path.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["bytes", "from_hex"] => Ok(TypedCallTarget::BytesFromHex),
-        ["console", "println"] => Ok(TypedCallTarget::ConsolePrintln),
-        ["Some"] => Ok(TypedCallTarget::Some),
-        ["Ok"] => Ok(TypedCallTarget::Ok),
-        ["Err"] => Ok(TypedCallTarget::Err),
-        [receiver, "to_int"] => local_for_name(program, receiver).map(TypedCallTarget::StringToInt).ok_or_else(|| error(span, "type-checked string receiver has no local ID")),
-        [name] => {
-            if let Some(id) = function.or_else(|| {
-                program
-                    .functions
-                    .iter()
-                    .find(|candidate| candidate.name == *name)
-                    .map(|candidate| candidate.id)
-            }) {
-                return Ok(TypedCallTarget::Function(id));
-            }
-            program.newtypes.iter().find(|item| item.name == *name).map(|item| TypedCallTarget::Newtype(item.id)).ok_or_else(|| error(span, "type-checked call has no target ID"))
-        }
-        [enum_name, variant_name] => program.enums.iter().find(|item| item.name == *enum_name).and_then(|item| item.variants.iter().find(|variant| variant.name == *variant_name)).map(|variant| TypedCallTarget::Variant(variant.id)).ok_or_else(|| error(span, "type-checked enum constructor has no variant ID")),
-        _ => Err(error(span, "type-checked call path is unsupported")),
-    }
-}
-
-fn expected_argument_types<'a>(target: &TypedCallTarget, path: &[String], program: &'a Program, signatures: &'a HashMap<String, Signature>) -> Vec<&'a Type> {
-    match target {
-        TypedCallTarget::Function(_) => path.first().and_then(|name| signatures.get(name)).map(|signature| signature.parameters.iter().collect()).unwrap_or_default(),
-        TypedCallTarget::Newtype(id) => program.newtypes.iter().find(|item| item.id == *id).map(|item| vec![&item.underlying]).unwrap_or_default(),
-        TypedCallTarget::Variant(id) => program.enums.iter().flat_map(|item| &item.variants).find(|item| item.id == *id).and_then(|item| item.payload.as_ref().map(|payload| vec![&payload.ty])).unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-fn field_id_for_type<'a>(program: &'a Program, ty: &Type, expression: &Expression) -> Option<&'a FieldId> {
-    let Type::Named(name) = ty else { return None; };
-    let Expression::FieldAccess { field, .. } = expression else { return None; };
-    program.structs.iter().find(|structure| structure.name == *name).and_then(|structure| structure.fields.iter().find(|candidate| candidate.name == *field)).map(|field| &field.id)
-}
-
-/// 旧实现的内部验证记录，保留至节点构造迁移完成后删除。
-///
-/// 它不属于 `TypedProgram`，后续阶段不可见也不可消费。
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RecordedExpression {
-    span: Span,
-    ty: Type,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct ResolvedLocalId(u32);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ResolvedTarget {
-    Local(ResolvedLocalId),
-    Function(DefId),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ResolvedReference {
-    span: Span,
-    target: ResolvedTarget,
-}
-
-/// 收集函数顶层顺序语句的名称解析结果。
-fn collect_sequential_references(
-    program: &Program,
-    functions: &[TypedFunction],
-) -> Vec<ResolvedReference> {
-    let definitions = functions
-        .iter()
-        .map(|function| (function.name.as_str(), function.id))
-        .collect::<HashMap<_, _>>();
-    let mut references = Vec::new();
-    for function in &program.functions {
-        let mut locals = HashMap::new();
-        let mut next = 0_u32;
-        for parameter in &function.parameters {
-            locals.insert(parameter.name.as_str(), ResolvedLocalId(next));
-            next += 1;
-        }
-        for statement in &function.statements {
-            match statement {
-                Statement::Let { name, value, .. } => {
-                    collect_direct_references(value, &locals, &definitions, &mut references);
-                    locals.insert(name.as_str(), ResolvedLocalId(next));
-                    next += 1;
-                }
-                Statement::Assign {
-                    name,
-                    name_span,
-                    value,
-                    ..
-                } => {
-                    if let Some(local) = locals.get(name.as_str()) {
-                        references.push(ResolvedReference {
-                            span: *name_span,
-                            target: ResolvedTarget::Local(*local),
-                        });
-                    }
-                    collect_direct_references(value, &locals, &definitions, &mut references);
-                }
-                Statement::Expression(value) | Statement::Destructure { value, .. } => {
-                    collect_direct_references(value, &locals, &definitions, &mut references);
-                }
-            }
-        }
-    }
-    references
-}
-
-/// 记录一个顺序表达式直接包含的变量读取与普通函数调用。
-fn collect_direct_references(
-    expression: &Expression,
-    locals: &HashMap<&str, ResolvedLocalId>,
-    functions: &HashMap<&str, DefId>,
-    references: &mut Vec<ResolvedReference>,
-) {
-    match expression {
-        Expression::Variable { name, span, .. } => {
-            if let Some(local) = locals.get(name.as_str()) {
-                references.push(ResolvedReference {
-                    span: *span,
-                    target: ResolvedTarget::Local(*local),
-                });
-            }
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } => {
-            if let [name] = path.as_slice() {
-                if let Some(function) = functions.get(name.as_str()) {
-                    references.push(ResolvedReference {
-                        span: *span,
-                        target: ResolvedTarget::Function(*function),
-                    });
-                }
-            }
-            for argument in arguments {
-                collect_direct_references(argument, locals, functions, references);
-            }
-        }
-        Expression::Add { left, right, .. }
-        | Expression::Multiply { left, right, .. }
-        | Expression::Equal { left, right, .. } => {
-            collect_direct_references(left, locals, functions, references);
-            collect_direct_references(right, locals, functions, references);
-        }
-        Expression::Return { value, .. }
-        | Expression::Try { value, .. }
-        | Expression::FieldAccess { target: value, .. } => {
-            collect_direct_references(value, locals, functions, references)
-        }
-        Expression::List { values, .. } | Expression::Tuple { values, .. } => {
-            for value in values {
-                collect_direct_references(value, locals, functions, references);
-            }
-        }
-        Expression::Map { entries, .. } => {
-            for entry in entries {
-                collect_direct_references(&entry.value, locals, functions, references);
-            }
-        }
-        Expression::StructLiteral { fields, .. } => {
-            for field in fields {
-                collect_direct_references(&field.value, locals, functions, references);
-            }
-        }
-        Expression::Integer { .. }
-        | Expression::Float { .. }
-        | Expression::Boolean { .. }
-        | Expression::String { .. }
-        | Expression::Match { .. }
-        | Expression::If { .. }
-        | Expression::For { .. } => {}
-    }
-}
-
-/// 在既有类型检查成功后，以相同作用域规则记录每个值表达式的确定类型。
-///
-/// 此处不产生新的类型结论；每次记录仍调用 `type_of`，因此若前一阶段的规则与记录过程
-/// 不一致会立刻作为内部检查错误暴露，而不会向 MIR 暴露未验证表达式。
-fn collect_expression_types(
-    program: &Program,
-    signatures: &HashMap<String, Signature>,
-    declarations: &Declarations,
-    console_imported: bool,
-) -> Result<Vec<RecordedExpression>, TypeError> {
-    let mut entries = Vec::new();
-    for structure in &program.structs {
-        for field in &structure.fields {
-            if let Some(default) = &field.default {
-                record_expression(
-                    default,
-                    &HashMap::new(),
-                    signatures,
-                    declarations,
-                    console_imported,
-                    &mut entries,
-                )?;
-            }
-        }
-    }
-    for function in &program.functions {
-        let mut bindings = HashMap::new();
-        for parameter in &function.parameters {
-            bindings.insert(
-                parameter.name.clone(),
-                Binding {
-                    ty: parameter.ty.clone(),
-                    mutable: false,
-                },
-            );
-        }
-        record_statements(
-            &function.statements,
-            &mut bindings,
-            signatures,
-            declarations,
-            console_imported,
-            &mut entries,
-        )?;
-    }
-    Ok(entries)
-}
-
-/// 按源码顺序记录语句中的表达式，并同步更新局部绑定环境。
-fn record_statements(
-    statements: &[Statement],
-    bindings: &mut HashMap<String, Binding>,
-    signatures: &HashMap<String, Signature>,
-    declarations: &Declarations,
-    console_imported: bool,
-    entries: &mut Vec<RecordedExpression>,
-) -> Result<(), TypeError> {
-    for statement in statements {
-        match statement {
-            Statement::Destructure { names, value, .. } => {
-                record_expression(
-                    value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-                let Type::Tuple(elements) =
-                    type_of(value, bindings, signatures, declarations, console_imported)?
-                else {
-                    return Err(error(
-                        value.span(),
-                        "type-checked destructuring requires a tuple value",
-                    ));
-                };
-                for ((name, _), ty) in names.iter().zip(elements) {
-                    bindings.insert(name.clone(), Binding { ty, mutable: false });
-                }
-            }
-            Statement::Let {
-                mutable,
-                name,
-                value,
-                ..
-            } => {
-                record_expression(
-                    value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-                let ty = type_of(value, bindings, signatures, declarations, console_imported)?;
-                bindings.insert(
-                    name.clone(),
-                    Binding {
-                        ty,
-                        mutable: *mutable,
-                    },
-                );
-            }
-            Statement::Assign { value, .. } | Statement::Expression(value) => record_expression(
-                value,
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-                entries,
-            )?,
-        }
-    }
-    Ok(())
-}
-
-/// 记录一个表达式及其子表达式的类型，并为嵌套块建立独立的局部作用域。
-fn record_expression(
-    expression: &Expression,
-    bindings: &HashMap<String, Binding>,
-    signatures: &HashMap<String, Signature>,
-    declarations: &Declarations,
-    console_imported: bool,
-    entries: &mut Vec<RecordedExpression>,
-) -> Result<(), TypeError> {
-    // `None` 没有独立类型，只能由函数参数等 Option 上下文推断；父表达式已记录该结论。
-    if matches!(expression, Expression::Variable { name, .. } if name == "None") {
-        return Ok(());
-    }
-    let ty = type_of(
-        expression,
-        bindings,
-        signatures,
-        declarations,
-        console_imported,
-    )?;
-    entries.push(RecordedExpression {
-        span: expression.span(),
-        ty,
-    });
-    match expression {
-        Expression::List { values, .. } | Expression::Tuple { values, .. } => {
-            for value in values {
-                record_expression(
-                    value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-            }
-        }
-        Expression::Map { entries: map, .. } => {
-            for entry in map {
-                record_expression(
-                    &entry.value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-            }
-        }
-        Expression::Match { target, arms, .. } => {
-            record_expression(
-                target,
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-                entries,
-            )?;
-            let target_type =
-                type_of(target, bindings, signatures, declarations, console_imported)?;
-            for arm in arms {
-                let mut arm_bindings = bindings.clone();
-                if let Some((name, _)) = &arm.pattern.binding {
-                    if let Some(ty) = match_binding_type(&target_type, &arm.pattern, declarations) {
-                        arm_bindings.insert(name.clone(), Binding { ty, mutable: false });
-                    }
-                }
-                record_expression(
-                    &arm.value,
-                    &arm_bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
+            TypedExpressionKind::Match {
+                target: Box::new(typed_target),
+                arms,
             }
         }
         Expression::If {
@@ -1044,159 +804,319 @@ fn record_expression(
             else_statements,
             ..
         } => {
-            record_expression(
+            let condition = Box::new(build_expression(
+                source,
                 condition,
                 bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
-            )?;
-            record_block(
+                Some(&Type::Bool),
+            )?);
+            let mut then_bindings = bindings.clone();
+            let then_statements = build_statements(
+                source,
                 then_statements,
-                bindings,
+                &mut then_bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
             )?;
-            record_block(
+            let mut else_bindings = bindings.clone();
+            let else_statements = build_statements(
+                source,
                 else_statements,
-                bindings,
+                &mut else_bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
             )?;
+            TypedExpressionKind::If {
+                condition,
+                then_statements,
+                else_statements,
+            }
         }
         Expression::For {
+            local,
             name,
+            name_span,
             iterable,
             statements,
             ..
         } => {
-            record_expression(
+            let iterable = Box::new(build_expression(
+                source,
                 iterable,
                 bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
-            )?;
+                None,
+            )?);
+            let Type::List(element) = iterable.ty.clone() else {
+                return Err(error(
+                    iterable.span,
+                    "type-checked for must iterate over a List value",
+                ));
+            };
+            let local = TypedLocal {
+                id: *local,
+                name: name.clone(),
+                span: *name_span,
+                location: SourceLocation::new(source, *name_span),
+                ty: *element,
+                mutable: false,
+            };
             let mut loop_bindings = bindings.clone();
-            if let Type::List(element) = type_of(
-                iterable,
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )? {
-                loop_bindings.insert(
-                    name.clone(),
-                    Binding {
-                        ty: *element,
-                        mutable: false,
-                    },
-                );
-            }
-            record_block(
+            loop_bindings.insert(
+                name.clone(),
+                Binding {
+                    id: local.id,
+                    ty: local.ty.clone(),
+                    mutable: false,
+                },
+            );
+            let statements = build_statements(
+                source,
                 statements,
-                &loop_bindings,
+                &mut loop_bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
             )?;
+            TypedExpressionKind::For {
+                local,
+                iterable,
+                statements,
+            }
         }
-        Expression::Return { value, .. } | Expression::Try { value, .. } => record_expression(
+        Expression::Return { value, .. } => {
+            TypedExpressionKind::Return(Box::new(build_expression(
+                source,
+                value,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                None,
+            )?))
+        }
+        Expression::Try { value, .. } => TypedExpressionKind::Try(Box::new(build_expression(
+            source,
             value,
             bindings,
+            program,
             signatures,
             declarations,
             console_imported,
-            entries,
-        )?,
-        Expression::FieldAccess { target, .. } if matches!(target.as_ref(), Expression::Variable { name, .. } if declarations.enums.contains_key(name)) =>
-            {}
-        Expression::FieldAccess { target, .. } => record_expression(
-            target,
-            bindings,
-            signatures,
-            declarations,
-            console_imported,
-            entries,
-        )?,
-        Expression::Call { arguments, .. } => {
-            for argument in arguments {
-                record_expression(
-                    argument,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-            }
+            None,
+        )?)),
+        Expression::Variable { name, local, .. } if name == "None" => TypedExpressionKind::None,
+        Expression::Variable { name, local, .. } => TypedExpressionKind::Local(
+            (*local).ok_or_else(|| error(span, format!("undefined variable `{name}`")))?,
+        ),
+        Expression::Call {
+            arguments, target, ..
+        } => {
+            let target = typed_call_target(*target, span)?;
+            let expected_arguments = expected_argument_types(&target, program);
+            let arguments = arguments
+                .iter()
+                .enumerate()
+                .map(|(index, argument)| {
+                    build_expression(
+                        source,
+                        argument,
+                        bindings,
+                        program,
+                        signatures,
+                        declarations,
+                        console_imported,
+                        expected_arguments.get(index).copied(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            TypedExpressionKind::Call { target, arguments }
         }
-        Expression::Add { left, right, .. }
-        | Expression::Multiply { left, right, .. }
-        | Expression::Equal { left, right, .. } => {
-            record_expression(
+        Expression::Add { left, right, .. } => TypedExpressionKind::Add(
+            Box::new(build_expression(
+                source,
                 left,
                 bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
-            )?;
-            record_expression(
+                Some(&Type::Int),
+            )?),
+            Box::new(build_expression(
+                source,
                 right,
                 bindings,
+                program,
                 signatures,
                 declarations,
                 console_imported,
-                entries,
-            )?;
+                Some(&Type::Int),
+            )?),
+        ),
+        Expression::Multiply { left, right, .. } => TypedExpressionKind::Multiply(
+            Box::new(build_expression(
+                source,
+                left,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                Some(&Type::Int),
+            )?),
+            Box::new(build_expression(
+                source,
+                right,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                Some(&Type::Int),
+            )?),
+        ),
+        Expression::Equal { left, right, .. } => TypedExpressionKind::Equal(
+            Box::new(build_expression(
+                source,
+                left,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                None,
+            )?),
+            Box::new(build_expression(
+                source,
+                right,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                None,
+            )?),
+        ),
+        Expression::StructLiteral {
+            structure, fields, ..
+        } => TypedExpressionKind::Struct {
+            structure: *structure,
+            fields: fields
+                .iter()
+                .map(|field| {
+                    let field_id = field.field_id.ok_or_else(|| {
+                        error(field.name_span, "type-checked struct field has no ID")
+                    })?;
+                    Ok((
+                        field_id,
+                        build_expression(
+                            source,
+                            &field.value,
+                            bindings,
+                            program,
+                            signatures,
+                            declarations,
+                            console_imported,
+                            None,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, TypeError>>()?,
+        },
+        Expression::FieldAccess {
+            target,
+            field_id,
+            variant,
+            ..
+        } if let Some(variant) = variant => TypedExpressionKind::Variant(*variant),
+        Expression::FieldAccess {
+            target, field_id, ..
+        } => {
+            let target = Box::new(build_expression(
+                source,
+                target,
+                bindings,
+                program,
+                signatures,
+                declarations,
+                console_imported,
+                None,
+            )?);
+            let field = (*field_id)
+                .ok_or_else(|| error(span, "type-checked field access has no field ID"))?;
+            TypedExpressionKind::Field { target, field }
         }
-        Expression::StructLiteral { fields, .. } => {
-            for field in fields {
-                record_expression(
-                    &field.value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                    entries,
-                )?;
-            }
-        }
-        Expression::Integer { .. }
-        | Expression::Float { .. }
-        | Expression::Boolean { .. }
-        | Expression::String { .. }
-        | Expression::Variable { .. } => {}
-    }
-    Ok(())
+    };
+    Ok(TypedExpression {
+        span,
+        location: SourceLocation::new(source, span),
+        ty,
+        kind,
+    })
 }
 
-/// 记录嵌套块时克隆外层绑定，避免块内声明泄漏到父作用域。
-fn record_block(
-    statements: &[Statement],
-    bindings: &HashMap<String, Binding>,
-    signatures: &HashMap<String, Signature>,
-    declarations: &Declarations,
-    console_imported: bool,
-    entries: &mut Vec<RecordedExpression>,
-) -> Result<(), TypeError> {
-    let mut block_bindings = bindings.clone();
-    record_statements(
-        statements,
-        &mut block_bindings,
-        signatures,
-        declarations,
-        console_imported,
-        entries,
-    )
+fn typed_call_target(
+    target: Option<HirCallTarget>,
+    span: Span,
+) -> Result<TypedCallTarget, TypeError> {
+    target
+        .map(|target| match target {
+            HirCallTarget::Function(id) => TypedCallTarget::Function(id),
+            HirCallTarget::Newtype(id) => TypedCallTarget::Newtype(id),
+            HirCallTarget::Variant(id) => TypedCallTarget::Variant(id),
+            HirCallTarget::Some => TypedCallTarget::Some,
+            HirCallTarget::Ok => TypedCallTarget::Ok,
+            HirCallTarget::Err => TypedCallTarget::Err,
+            HirCallTarget::BytesFromHex => TypedCallTarget::BytesFromHex,
+            HirCallTarget::ConsolePrintln => TypedCallTarget::ConsolePrintln,
+            HirCallTarget::StringToInt(local) => TypedCallTarget::StringToInt(local),
+        })
+        .ok_or_else(|| error(span, "type-checked call has no target ID"))
+}
+
+fn expected_argument_types<'a>(target: &TypedCallTarget, program: &'a Program) -> Vec<&'a Type> {
+    match target {
+        TypedCallTarget::Function(id) => program
+            .functions
+            .iter()
+            .find(|function| function.id == *id)
+            .map(|function| {
+                function
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.ty)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        TypedCallTarget::Newtype(id) => program
+            .newtypes
+            .iter()
+            .find(|item| item.id == *id)
+            .map(|item| vec![&item.underlying])
+            .unwrap_or_default(),
+        TypedCallTarget::Variant(id) => program
+            .enums
+            .iter()
+            .flat_map(|item| &item.variants)
+            .find(|item| item.id == *id)
+            .and_then(|item| item.payload.as_ref().map(|payload| vec![&payload.ty]))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// 返回 match 分支载荷在该分支内对应的局部绑定类型。
@@ -1226,32 +1146,76 @@ fn match_binding_type(
 #[derive(Clone, Debug)]
 struct Declarations {
     newtypes: HashMap<String, Type>,
+    newtypes_by_id: HashMap<DefId, (String, Type)>,
     structs: HashMap<String, Vec<Field>>,
     enums: HashMap<String, Vec<yan_hir::EnumVariant>>,
+    variants_by_id: HashMap<VariantId, (String, yan_hir::EnumVariant)>,
+    checked_types: RefCell<HashMap<ExpressionId, Type>>,
+    current_source: Cell<SourceId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ExpressionId {
+    source: SourceId,
+    start: usize,
+    end: usize,
+}
+
+impl Declarations {
+    fn set_source(&self, source: SourceId) {
+        self.current_source.set(source);
+    }
+
+    fn expression_id(&self, span: Span) -> ExpressionId {
+        ExpressionId {
+            source: self.current_source.get(),
+            start: span.start,
+            end: span.end,
+        }
+    }
+
+    fn checked_type(&self, source: SourceId, span: Span) -> Option<Type> {
+        self.checked_types
+            .borrow()
+            .get(&ExpressionId {
+                source,
+                start: span.start,
+                end: span.end,
+            })
+            .cloned()
+    }
 }
 
 fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
     let mut newtypes = HashMap::new();
+    let mut newtypes_by_id = HashMap::new();
     let mut structs = HashMap::new();
     let mut enums = HashMap::new();
+    let mut variants_by_id = HashMap::new();
     for newtype in &program.newtypes {
         if newtypes.contains_key(&newtype.name)
             || structs.contains_key(&newtype.name)
             || enums.contains_key(&newtype.name)
         {
-            return Err(error(
+            return Err(error_at(
+                newtype.source,
                 newtype.name_span,
                 format!("type `{}` is already defined", newtype.name),
             ));
         }
         newtypes.insert(newtype.name.clone(), newtype.underlying.clone());
+        newtypes_by_id.insert(
+            newtype.id,
+            (newtype.name.clone(), newtype.underlying.clone()),
+        );
     }
     for structure in &program.structs {
         if newtypes.contains_key(&structure.name)
             || structs.contains_key(&structure.name)
             || enums.contains_key(&structure.name)
         {
-            return Err(error(
+            return Err(error_at(
+                structure.source,
                 structure.name_span,
                 format!("type `{}` is already defined", structure.name),
             ));
@@ -1259,7 +1223,8 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
         let mut names = HashMap::new();
         for field in &structure.fields {
             if names.insert(field.name.as_str(), ()).is_some() {
-                return Err(error(
+                return Err(error_at(
+                    field.source,
                     field.name_span,
                     format!("field `{}` is already defined", field.name),
                 ));
@@ -1272,13 +1237,15 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
             || structs.contains_key(&enumeration.name)
             || enums.contains_key(&enumeration.name)
         {
-            return Err(error(
+            return Err(error_at(
+                enumeration.source,
                 enumeration.name_span,
                 format!("type `{}` is already defined", enumeration.name),
             ));
         }
         if enumeration.variants.is_empty() {
-            return Err(error(
+            return Err(error_at(
+                enumeration.source,
                 enumeration.name_span,
                 format!(
                     "enum `{}` must define at least one variant",
@@ -1289,35 +1256,46 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
         let mut names = HashMap::new();
         for variant in &enumeration.variants {
             if names.insert(variant.name.as_str(), ()).is_some() {
-                return Err(error(
+                return Err(error_at(
+                    variant.source,
                     variant.name_span,
                     format!("variant `{}` is already defined", variant.name),
                 ));
             }
+            variants_by_id.insert(variant.id, (enumeration.name.clone(), variant.clone()));
         }
         enums.insert(enumeration.name.clone(), enumeration.variants.clone());
     }
     let declarations = Declarations {
         newtypes,
+        newtypes_by_id,
         structs,
         enums,
+        variants_by_id,
+        checked_types: RefCell::new(HashMap::new()),
+        current_source: Cell::new(program.source),
     };
-    for underlying in declarations.newtypes.values() {
-        check_declared_type(underlying, &declarations, Span::default())?;
+    for newtype in &program.newtypes {
+        check_declared_type(&newtype.underlying, &declarations, newtype.name_span)
+            .map_err(|error| error.with_source(newtype.source))?;
     }
-    for fields in declarations.structs.values() {
-        for field in fields {
-            check_declared_type(&field.ty, &declarations, field.name_span)?;
+    for structure in &program.structs {
+        for field in &structure.fields {
+            check_declared_type(&field.ty, &declarations, field.name_span)
+                .map_err(|error| error.with_source(field.source))?;
             if let Some(default) = &field.default {
+                declarations.set_source(field.source);
                 let actual = type_of(
                     default,
                     &HashMap::new(),
                     &HashMap::new(),
                     &declarations,
                     false,
-                )?;
+                )
+                .map_err(|error| error.with_source(field.source))?;
                 if actual != field.ty {
-                    return Err(error(
+                    return Err(error_at(
+                        field.source,
                         field.name_span,
                         format!(
                             "default value for field `{}` does not match its type",
@@ -1328,10 +1306,11 @@ fn collect_declarations(program: &Program) -> Result<Declarations, TypeError> {
             }
         }
     }
-    for variants in declarations.enums.values() {
-        for variant in variants {
+    for enumeration in &program.enums {
+        for variant in &enumeration.variants {
             if let Some(payload) = &variant.payload {
-                check_declared_type(&payload.ty, &declarations, payload.name_span)?;
+                check_declared_type(&payload.ty, &declarations, payload.name_span)
+                    .map_err(|error| error.with_source(variant.source))?;
             }
         }
     }
@@ -1376,7 +1355,7 @@ fn check_no_recursion(program: &Program) -> Result<(), TypeError> {
         .iter()
         .map(|function| {
             (
-                function.name.as_str(),
+                function.id,
                 function
                     .statements
                     .iter()
@@ -1388,7 +1367,7 @@ fn check_no_recursion(program: &Program) -> Result<(), TypeError> {
     let mut states = HashMap::new();
 
     for function in &program.functions {
-        visit_call_graph(function.name.as_str(), &edges, &mut states)?;
+        visit_call_graph(function.id, &edges, &mut states)?;
     }
     Ok(())
 }
@@ -1400,31 +1379,31 @@ enum VisitState {
 }
 
 fn visit_call_graph(
-    name: &str,
-    edges: &HashMap<&str, Vec<(&str, Span)>>,
-    states: &mut HashMap<String, VisitState>,
+    id: DefId,
+    edges: &HashMap<DefId, Vec<(DefId, Span)>>,
+    states: &mut HashMap<DefId, VisitState>,
 ) -> Result<(), TypeError> {
-    if states.get(name) == Some(&VisitState::Visited) {
+    if states.get(&id) == Some(&VisitState::Visited) {
         return Ok(());
     }
-    states.insert(name.to_owned(), VisitState::Visiting);
+    states.insert(id, VisitState::Visiting);
 
-    if let Some(calls) = edges.get(name) {
+    if let Some(calls) = edges.get(&id) {
         for (target, span) in calls {
-            if states.get(*target) == Some(&VisitState::Visiting) {
+            if states.get(target) == Some(&VisitState::Visiting) {
                 return Err(error(*span, "M3 does not support recursive function calls"));
             }
-            if edges.contains_key(*target) {
-                visit_call_graph(target, edges, states)?;
+            if edges.contains_key(target) {
+                visit_call_graph(*target, edges, states)?;
             }
         }
     }
 
-    states.insert(name.to_owned(), VisitState::Visited);
+    states.insert(id, VisitState::Visited);
     Ok(())
 }
 
-fn statement_calls(statement: &Statement) -> Vec<(&str, Span)> {
+fn statement_calls(statement: &Statement) -> Vec<(DefId, Span)> {
     match statement {
         Statement::Destructure { value, .. } => expression_calls(value),
         Statement::Let { value, .. } | Statement::Assign { value, .. } => expression_calls(value),
@@ -1432,10 +1411,10 @@ fn statement_calls(statement: &Statement) -> Vec<(&str, Span)> {
     }
 }
 
-fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
+fn expression_calls(expression: &Expression) -> Vec<(DefId, Span)> {
     match expression {
         Expression::Call {
-            path,
+            target,
             arguments,
             span,
             ..
@@ -1444,8 +1423,8 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
                 .iter()
                 .flat_map(expression_calls)
                 .collect::<Vec<_>>();
-            if path.len() == 1 {
-                calls.push((&path[0], *span));
+            if let Some(HirCallTarget::Function(id)) = target {
+                calls.push((*id, *span));
             }
             calls
         }
@@ -1503,12 +1482,15 @@ fn expression_calls(expression: &Expression) -> Vec<(&str, Span)> {
 
 #[derive(Clone, Debug)]
 struct Binding {
+    id: LocalId,
     ty: Type,
     mutable: bool,
 }
 
 #[derive(Clone, Debug)]
 struct Signature {
+    id: DefId,
+    name: String,
     parameters: Vec<Type>,
     return_type: Type,
 }
@@ -1560,6 +1542,8 @@ fn collect_signatures(
         signatures.insert(
             function.name.clone(),
             Signature {
+                id: function.id,
+                name: function.name.clone(),
                 parameters: function
                     .parameters
                     .iter()
@@ -1597,6 +1581,7 @@ fn check_function(
         bindings.insert(
             parameter.name.clone(),
             Binding {
+                id: parameter.id,
                 ty: parameter.ty.clone(),
                 mutable: false,
             },
@@ -1644,7 +1629,11 @@ fn check_statement(
     console_imported: bool,
 ) -> Result<Option<Type>, TypeError> {
     match statement {
-        Statement::Destructure { names, value, .. } => {
+        Statement::Destructure {
+            locals,
+            names,
+            value,
+        } => {
             if names.len() < 2 || names.len() > 3 {
                 return Err(error(
                     value.span(),
@@ -1665,18 +1654,26 @@ fn check_statement(
                     "tuple destructuring length does not match value type",
                 ));
             }
-            for ((name, span), ty) in names.iter().zip(elements) {
+            for (((name, span), id), ty) in names.iter().zip(locals).zip(elements) {
                 if bindings.contains_key(name) {
                     return Err(error(
                         *span,
                         format!("variable `{name}` is already defined"),
                     ));
                 }
-                bindings.insert(name.clone(), Binding { ty, mutable: false });
+                bindings.insert(
+                    name.clone(),
+                    Binding {
+                        id: *id,
+                        ty,
+                        mutable: false,
+                    },
+                );
             }
             Ok(None)
         }
         Statement::Let {
+            local,
             mutable,
             name,
             name_span,
@@ -1703,6 +1700,7 @@ fn check_statement(
             bindings.insert(
                 name.clone(),
                 Binding {
+                    id: *local,
                     ty: actual,
                     mutable: *mutable,
                 },
@@ -1710,13 +1708,15 @@ fn check_statement(
             Ok(None)
         }
         Statement::Assign {
+            local,
             name,
             name_span,
             value,
             ..
         } => {
             let binding = bindings
-                .get(name)
+                .values()
+                .find(|binding| binding.id == *local)
                 .ok_or_else(|| error(*name_span, format!("undefined variable `{name}`")))?;
             if !binding.mutable {
                 return Err(error(
@@ -1782,19 +1782,47 @@ fn type_of(
     declarations: &Declarations,
     console_imported: bool,
 ) -> Result<Type, TypeError> {
+    let id = declarations.expression_id(expression.span());
+    if let Some(ty) = declarations.checked_types.borrow().get(&id).cloned() {
+        return Ok(ty);
+    }
+    let ty = type_of_uncached(
+        expression,
+        bindings,
+        signatures,
+        declarations,
+        console_imported,
+    )?;
+    declarations
+        .checked_types
+        .borrow_mut()
+        .insert(id, ty.clone());
+    Ok(ty)
+}
+
+fn type_of_uncached(
+    expression: &Expression,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
     match expression {
         Expression::Integer { .. } => Ok(Type::Int),
         Expression::Float { .. } => Ok(Type::Float),
         Expression::Boolean { .. } => Ok(Type::Bool),
         Expression::String { parts, .. } => {
             for part in parts {
-                if let StringPart::Variable { name, span, .. } = part {
-                    let binding = bindings.get(name).ok_or_else(|| {
-                        error(
+                if let StringPart::Variable { local, name, span } = part {
+                    let binding =
+                        local
+                            .and_then(|id| bindings.values().find(|binding| binding.id == id))
+                            .ok_or_else(|| {
+                                error(
                             *span,
                             format!("string interpolation references undefined variable `{name}`"),
                         )
-                    })?;
+                            })?;
                     if !matches!(binding.ty, Type::Int | Type::Bool | Type::String) {
                         return Err(error(
                             *span,
@@ -1805,8 +1833,10 @@ fn type_of(
             }
             Ok(Type::String)
         }
-        Expression::Variable { name, span, .. } => bindings
-            .get(name)
+        Expression::Variable {
+            local, name, span, ..
+        } => local
+            .and_then(|id| bindings.values().find(|binding| binding.id == id))
             .map(|binding| binding.ty.clone())
             .ok_or_else(|| error(*span, format!("undefined variable `{name}`"))),
         Expression::List { values, span } => {
@@ -1920,6 +1950,7 @@ fn type_of(
             })
         }
         Expression::For {
+            local,
             name,
             name_span,
             iterable,
@@ -1947,6 +1978,7 @@ fn type_of(
             loop_bindings.insert(
                 name.clone(),
                 Binding {
+                    id: *local,
                     ty: *element,
                     mutable: false,
                 },
@@ -1966,7 +1998,10 @@ fn type_of(
             }
             Ok(Type::Unit)
         }
-        Expression::Return { .. } => Ok(Type::Never),
+        Expression::Return { value, .. } => {
+            let _ = type_of(value, bindings, signatures, declarations, console_imported)?;
+            Ok(Type::Never)
+        }
         Expression::Try { value, span } => {
             let Type::Result(ok, _) =
                 type_of(value, bindings, signatures, declarations, console_imported)?
@@ -1998,214 +2033,20 @@ fn type_of(
             }
         }
         Expression::Call {
+            target,
             path,
             arguments,
             span,
-            ..
-        } if path.iter().map(String::as_str).eq(["bytes", "from_hex"]) => {
-            if arguments.len() != 1 {
-                return Err(error(*span, "bytes.from_hex requires exactly one argument"));
-            }
-            if type_of(
-                &arguments[0],
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )? != Type::String
-            {
-                return Err(error(
-                    arguments[0].span(),
-                    "bytes.from_hex requires a string argument",
-                ));
-            }
-            Ok(Type::Bytes)
-        }
-        Expression::Call {
+        } => type_of_resolved_call(
+            *target,
             path,
             arguments,
-            span,
-            ..
-        } if path.iter().map(String::as_str).eq(["console", "println"]) => {
-            if !console_imported {
-                return Err(error(
-                    *span,
-                    "console.println requires import yan.platform.console",
-                ));
-            }
-            if arguments.len() != 1 {
-                return Err(error(
-                    *span,
-                    "console.println requires exactly one argument",
-                ));
-            }
-            let _ = type_of(
-                &arguments[0],
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )?;
-            Ok(Type::Unit)
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.iter().map(String::as_str).eq(["Some"]) => {
-            if arguments.len() != 1 {
-                return Err(error(*span, "Some requires exactly one argument"));
-            }
-            let element = type_of(
-                &arguments[0],
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )?;
-            if matches!(element, Type::Option(_)) {
-                return Err(error(
-                    arguments[0].span(),
-                    "M7 does not support nested Option values",
-                ));
-            }
-            Ok(Type::Option(Box::new(element)))
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.iter().map(String::as_str).eq(["Ok"]) => {
-            let [value] = arguments.as_slice() else {
-                return Err(error(*span, "Ok requires exactly one argument"));
-            };
-            Ok(Type::Result(
-                Box::new(type_of(
-                    value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                )?),
-                Box::new(Type::Never),
-            ))
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.iter().map(String::as_str).eq(["Err"]) => {
-            let [value] = arguments.as_slice() else {
-                return Err(error(*span, "Err requires exactly one argument"));
-            };
-            Ok(Type::Result(
-                Box::new(Type::Never),
-                Box::new(type_of(
-                    value,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                )?),
-            ))
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.len() == 2 && path[1] == "to_int" => {
-            if !arguments.is_empty() {
-                return Err(error(*span, "string.to_int does not accept arguments"));
-            }
-            if bindings.get(&path[0]).map(|binding| &binding.ty) != Some(&Type::String) {
-                return Err(error(*span, "string.to_int requires a string variable"));
-            }
-            Ok(Type::Result(Box::new(Type::Int), Box::new(Type::Unit)))
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.len() == 2 && declarations.enums.contains_key(&path[0]) => {
-            type_of_enum_constructor(
-                path,
-                arguments,
-                *span,
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.len() == 1 && !declarations.newtypes.contains_key(&path[0]) => {
-            let name = &path[0];
-            let signature = signatures
-                .get(name)
-                .ok_or_else(|| error(*span, format!("undefined function `{name}`")))?;
-            if signature.parameters.len() != arguments.len() {
-                return Err(error(
-                    *span,
-                    format!("function `{name}` argument count does not match"),
-                ));
-            }
-            for (argument, expected) in arguments.iter().zip(&signature.parameters) {
-                if !argument_matches_expected_type(
-                    argument,
-                    expected,
-                    bindings,
-                    signatures,
-                    declarations,
-                    console_imported,
-                )? {
-                    return Err(error(
-                        argument.span(),
-                        format!("function `{name}` argument type does not match"),
-                    ));
-                }
-            }
-            Ok(signature.return_type.clone())
-        }
-        Expression::Call {
-            path,
-            arguments,
-            span,
-            ..
-        } if path.len() == 1 && declarations.newtypes.contains_key(&path[0]) => {
-            if arguments.len() != 1 {
-                return Err(error(
-                    *span,
-                    format!("newtype `{}` requires exactly one argument", path[0]),
-                ));
-            }
-            let underlying = &declarations.newtypes[&path[0]];
-            if type_of(
-                &arguments[0],
-                bindings,
-                signatures,
-                declarations,
-                console_imported,
-            )? != *underlying
-            {
-                return Err(error(
-                    arguments[0].span(),
-                    format!(
-                        "newtype `{}` constructor argument does not match its underlying type",
-                        path[0]
-                    ),
-                ));
-            }
-            Ok(Type::Named(path[0].clone()))
-        }
+            *span,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        ),
         Expression::StructLiteral {
             name, fields, span, ..
         } => {
@@ -2299,7 +2140,184 @@ fn type_of(
                     )
                 })
         }
-        Expression::Call { span, .. } => Err(error(*span, "M4 does not support this call path")),
+    }
+}
+
+fn type_of_resolved_call(
+    target: Option<HirCallTarget>,
+    path: &[String],
+    arguments: &[Expression],
+    span: Span,
+    bindings: &HashMap<String, Binding>,
+    signatures: &HashMap<String, Signature>,
+    declarations: &Declarations,
+    console_imported: bool,
+) -> Result<Type, TypeError> {
+    match target {
+        Some(HirCallTarget::BytesFromHex) => {
+            let [argument] = arguments else {
+                return Err(error(span, "bytes.from_hex requires exactly one argument"));
+            };
+            if type_of(
+                argument,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )? != Type::String
+            {
+                return Err(error(
+                    argument.span(),
+                    "bytes.from_hex requires a string argument",
+                ));
+            }
+            Ok(Type::Bytes)
+        }
+        Some(HirCallTarget::ConsolePrintln) => {
+            if !console_imported {
+                return Err(error(
+                    span,
+                    "console.println requires import yan.platform.console",
+                ));
+            }
+            let [argument] = arguments else {
+                return Err(error(span, "console.println requires exactly one argument"));
+            };
+            let _ = type_of(
+                argument,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            Ok(Type::Unit)
+        }
+        Some(HirCallTarget::Some) => {
+            let [argument] = arguments else {
+                return Err(error(span, "Some requires exactly one argument"));
+            };
+            let element = type_of(
+                argument,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if matches!(element, Type::Option(_)) {
+                return Err(error(
+                    argument.span(),
+                    "M7 does not support nested Option values",
+                ));
+            }
+            Ok(Type::Option(Box::new(element)))
+        }
+        Some(HirCallTarget::Ok) | Some(HirCallTarget::Err) => {
+            let [argument] = arguments else {
+                let name = if matches!(target, Some(HirCallTarget::Ok)) {
+                    "Ok"
+                } else {
+                    "Err"
+                };
+                return Err(error(span, format!("{name} requires exactly one argument")));
+            };
+            let ty = type_of(
+                argument,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )?;
+            if matches!(target, Some(HirCallTarget::Ok)) {
+                Ok(Type::Result(Box::new(ty), Box::new(Type::Never)))
+            } else {
+                Ok(Type::Result(Box::new(Type::Never), Box::new(ty)))
+            }
+        }
+        Some(HirCallTarget::StringToInt(local)) => {
+            if !arguments.is_empty() {
+                return Err(error(span, "string.to_int does not accept arguments"));
+            }
+            if bindings
+                .values()
+                .find(|binding| binding.id == local)
+                .map(|binding| &binding.ty)
+                != Some(&Type::String)
+            {
+                return Err(error(span, "string.to_int requires a string variable"));
+            }
+            Ok(Type::Result(Box::new(Type::Int), Box::new(Type::Unit)))
+        }
+        Some(HirCallTarget::Function(id)) => {
+            let signature = signatures
+                .values()
+                .find(|signature| signature.id == id)
+                .ok_or_else(|| error(span, "resolved function target is not declared"))?;
+            if signature.parameters.len() != arguments.len() {
+                return Err(error(
+                    span,
+                    format!(
+                        "function `{}` argument count does not match",
+                        signature.name
+                    ),
+                ));
+            }
+            for (argument, expected) in arguments.iter().zip(&signature.parameters) {
+                if !argument_matches_expected_type(
+                    argument,
+                    expected,
+                    bindings,
+                    signatures,
+                    declarations,
+                    console_imported,
+                )? {
+                    return Err(error(
+                        argument.span(),
+                        format!("function `{}` argument type does not match", signature.name),
+                    ));
+                }
+            }
+            Ok(signature.return_type.clone())
+        }
+        Some(HirCallTarget::Newtype(id)) => {
+            let Some((name, underlying)) = declarations.newtypes_by_id.get(&id) else {
+                return Err(error(span, "resolved newtype target is not declared"));
+            };
+            let [argument] = arguments else {
+                return Err(error(
+                    span,
+                    format!("newtype `{name}` requires exactly one argument"),
+                ));
+            };
+            if type_of(
+                argument,
+                bindings,
+                signatures,
+                declarations,
+                console_imported,
+            )? != *underlying
+            {
+                return Err(error(
+                    argument.span(),
+                    format!(
+                        "newtype `{name}` constructor argument does not match its underlying type"
+                    ),
+                ));
+            }
+            Ok(Type::Named(name.clone()))
+        }
+        Some(HirCallTarget::Variant(id)) => type_of_enum_constructor_by_id(
+            id,
+            arguments,
+            span,
+            bindings,
+            signatures,
+            declarations,
+            console_imported,
+        ),
+        None => match path {
+            [name] => Err(error(span, format!("undefined function `{name}`"))),
+            _ => Err(error(span, "M4 does not support this call path")),
+        },
     }
 }
 
@@ -2327,10 +2345,8 @@ fn argument_matches_expected_type(
     ))
 }
 
-/// 验证 enum 变体构造的载荷数量和类型。构造表达式的路径已由 parser 保留，必须在
-/// 声明表建立后才能区分它与普通模块调用，避免语法层依赖类型信息。
-fn type_of_enum_constructor(
-    path: &[String],
+fn type_of_enum_constructor_by_id(
+    id: VariantId,
     arguments: &[Expression],
     span: Span,
     bindings: &HashMap<String, Binding>,
@@ -2338,31 +2354,24 @@ fn type_of_enum_constructor(
     declarations: &Declarations,
     console_imported: bool,
 ) -> Result<Type, TypeError> {
-    let enum_name = &path[0];
-    let variant_name = &path[1];
-    let variants = declarations
-        .enums
-        .get(enum_name)
-        .ok_or_else(|| error(span, format!("undefined enum `{enum_name}`")))?;
-    let variant = variants
-        .iter()
-        .find(|variant| variant.name == *variant_name)
-        .ok_or_else(|| {
-            error(
-                span,
-                format!("enum `{enum_name}` has no variant `{variant_name}`"),
-            )
-        })?;
-
+    let Some((enum_name, variant)) = declarations.variants_by_id.get(&id) else {
+        return Err(error(span, "resolved enum variant target is not declared"));
+    };
     match &variant.payload {
         None if arguments.is_empty() => Ok(Type::Named(enum_name.clone())),
         None => Err(error(
             span,
-            format!("enum variant `{enum_name}.{variant_name}` does not accept arguments"),
+            format!(
+                "enum variant `{enum_name}.{}` does not accept arguments",
+                variant.name
+            ),
         )),
-        Some(payload) if arguments.len() != 1 => Err(error(
+        Some(_) if arguments.len() != 1 => Err(error(
             span,
-            format!("enum variant `{enum_name}.{variant_name}` requires exactly one argument"),
+            format!(
+                "enum variant `{enum_name}.{}` requires exactly one argument",
+                variant.name
+            ),
         )),
         Some(payload) => {
             let actual = type_of(
@@ -2376,7 +2385,8 @@ fn type_of_enum_constructor(
                 return Err(error(
                     arguments[0].span(),
                     format!(
-                        "enum variant `{enum_name}.{variant_name}` argument does not match its payload type"
+                        "enum variant `{enum_name}.{}` argument does not match its payload type",
+                        variant.name
                     ),
                 ));
             }
@@ -2385,6 +2395,8 @@ fn type_of_enum_constructor(
     }
 }
 
+/// 验证 enum 变体构造的载荷数量和类型。构造表达式的路径已由 parser 保留，必须在
+/// 声明表建立后才能区分它与普通模块调用，避免语法层依赖类型信息。
 /// 根据目标类型分派 enum 或 Option 的受限穷尽匹配校验。
 fn type_of_match(
     target: &Expression,
@@ -2498,9 +2510,16 @@ fn type_of_enum_match(
                 ));
             }
             (Some(payload), Some((binding, _))) => {
+                let id = arm.pattern.binding_local.ok_or_else(|| {
+                    error(
+                        arm.pattern.variant_span,
+                        "type-checked match binding has no local ID",
+                    )
+                })?;
                 arm_bindings.insert(
                     binding.clone(),
                     Binding {
+                        id,
                         ty: payload.ty.clone(),
                         mutable: false,
                     },
@@ -2561,9 +2580,16 @@ fn type_of_option_match(
         let mut arm_bindings = bindings.clone();
         match (arm.pattern.variant.as_str(), &arm.pattern.binding) {
             ("Some", Some((binding, _))) => {
+                let id = arm.pattern.binding_local.ok_or_else(|| {
+                    error(
+                        arm.pattern.variant_span,
+                        "type-checked match binding has no local ID",
+                    )
+                })?;
                 arm_bindings.insert(
                     binding.clone(),
                     Binding {
+                        id,
                         ty: element.clone(),
                         mutable: false,
                     },
@@ -2652,9 +2678,16 @@ fn type_of_result_match(
             ));
         };
         let mut arm_bindings = bindings.clone();
+        let id = arm.pattern.binding_local.ok_or_else(|| {
+            error(
+                arm.pattern.variant_span,
+                "type-checked match binding has no local ID",
+            )
+        })?;
         arm_bindings.insert(
             binding.clone(),
             Binding {
+                id,
                 ty: payload_type.clone(),
                 mutable: false,
             },
@@ -2721,17 +2754,35 @@ fn statement_span(statement: &Statement) -> Span {
 
 fn error(span: Span, message: impl Into<String>) -> TypeError {
     TypeError {
-        span,
+        location: SourceLocation::new(SourceId(0), span),
         message: message.into(),
+    }
+}
+
+fn error_at(source: SourceId, span: Span, message: impl Into<String>) -> TypeError {
+    TypeError {
+        location: SourceLocation::new(source, span),
+        message: message.into(),
+    }
+}
+
+impl TypeError {
+    fn with_source(mut self, source: SourceId) -> Self {
+        self.location.source = source;
+        self
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use yan_hir::{lower, Type};
+    use yan_hir::{
+        lower, lower_with_source, CallTarget, DefId, Expression, LocalId, Statement, StringPart,
+        Type,
+    };
+    use yan_source::SourceId;
     use yan_syntax::{lex, parse};
 
-    use super::{check, check_library, TypedStatement};
+    use super::{check, check_library, TypedExpressionKind, TypedStatement, TypedStringPart};
 
     fn check_source(source: &str) -> Result<(), super::TypeError> {
         let tokens = lex(source).expect("测试源码应完成词法分析");
@@ -2745,6 +2796,136 @@ mod tests {
         let source = "import yan.platform.console fn twice(value: int) -> int { value * 2 } fn label(total: int) -> string { \"total: {total}\" } fn main() -> unit { let total = twice(3) console.println(label(total)) }";
 
         check_source(source).expect("函数调用和字符串插值应通过类型检查");
+    }
+
+    #[test]
+    fn builds_typed_programs_for_m2_to_m13_semantic_categories() {
+        for (category, source) in [
+            ("values", "fn value() -> int { let value = 1 value } fn main() -> unit { }") ,
+            ("struct", "struct User { name: string } fn build() -> User { User { name: \"Yan\" } } fn main() -> unit { }") ,
+            ("enum option result", "enum State { Ready } fn value() -> Result<int, unit> { let value = Some(1) match value { Some(item) => Ok(item) None => Ok(0) } } fn main() -> unit { }") ,
+            ("tuple if for mutation", "fn main() -> unit { let mut total = 0 let (left, right) = (1, 2) for item in [left, right] { total = total + item } if total == 3 { } else { } }") ,
+        ] {
+            let tokens = lex(source).expect("fixture must lex");
+            let syntax = parse(source, &tokens).expect("fixture must parse");
+            let program = lower(syntax).expect("fixture must lower");
+            let typed = check(&program).unwrap_or_else(|error| panic!("{category}: {}", error.message));
+            assert!(!typed.functions.is_empty(), "{category} must retain typed functions");
+        }
+    }
+
+    #[test]
+    fn typed_interpolation_uses_its_resolved_local_id() {
+        let source =
+            "fn label() -> string { let title = \"Yan\" \"{title}\" } fn main() -> unit { }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let mut program = lower_with_source(syntax, SourceId(41)).expect("测试源码应完成 lowering");
+        let Statement::Expression(Expression::String { parts, .. }) =
+            &mut program.functions[0].statements[1]
+        else {
+            panic!("测试源码末尾必须是字符串插值")
+        };
+        let StringPart::Variable { local, name, .. } = &mut parts[0] else {
+            panic!("测试源码必须包含变量插值")
+        };
+        assert_eq!(*local, Some(LocalId(0)));
+        assert_eq!(name, "title");
+
+        let typed = check(&program).expect("已解析插值不应重新按名称查找");
+        let TypedStatement::Expression(expression) = &typed.functions[0].statements[1] else {
+            panic!("Typed HIR 末尾必须是表达式")
+        };
+        assert!(matches!(
+            &expression.kind,
+            TypedExpressionKind::String(parts)
+                if matches!(parts.as_slice(), [TypedStringPart::Local(LocalId(0))])
+        ));
+        assert_eq!(expression.location.source, SourceId(41));
+        let TypedStatement::Let { local, value } = &typed.functions[0].statements[0] else {
+            panic!("Typed HIR 首语句必须是 let")
+        };
+        assert_eq!(local.location.source, SourceId(41));
+        assert_eq!(value.location.source, SourceId(41));
+    }
+
+    #[test]
+    fn typed_struct_uses_its_resolved_declaration_id() {
+        let source =
+            "struct User { name: string } fn main() -> unit { let user = User { name: \"Yan\" } }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let mut program = lower(syntax).expect("测试源码应完成 lowering");
+        let Statement::Let { value, .. } = &mut program.functions[0].statements[0] else {
+            panic!("测试源码必须构造结构体")
+        };
+        let Expression::StructLiteral { structure, .. } = value else {
+            panic!("测试源码必须构造结构体")
+        };
+        *structure = DefId(77);
+
+        let typed = check(&program).expect("已解析结构体构造应直接消费声明 ID");
+        let TypedStatement::Let { value, .. } = &typed.functions[0].statements[0] else {
+            panic!("Typed HIR 首语句必须是 let")
+        };
+        assert!(matches!(
+            value.kind,
+            TypedExpressionKind::Struct {
+                structure: DefId(77),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn semantic_call_dispatch_ignores_misleading_path_metadata() {
+        let source = "fn helper() -> unit { } fn main() -> unit { helper() }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let mut program = lower(syntax).expect("测试源码应完成 lowering");
+        let Statement::Expression(Expression::Call { target, path, .. }) =
+            &mut program.functions[1].statements[0]
+        else {
+            panic!("main 必须调用 helper")
+        };
+        assert_eq!(*target, Some(CallTarget::Function(DefId(0))));
+        *path = vec!["main".to_owned()];
+
+        let typed = check(&program).expect("调用检查与递归图必须消费已解析目标 ID");
+        let TypedStatement::Expression(expression) = &typed.functions[1].statements[0] else {
+            panic!("Typed HIR main 首语句必须是调用")
+        };
+        assert!(matches!(
+            expression.kind,
+            TypedExpressionKind::Call {
+                target: super::TypedCallTarget::Function(DefId(0)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn semantic_local_type_uses_resolved_id_instead_of_name_metadata() {
+        let source = "fn main() -> unit { let value = 1 let copy = value }";
+        let tokens = lex(source).expect("测试源码应完成词法分析");
+        let syntax = parse(source, &tokens).expect("测试源码应完成语法分析");
+        let mut program = lower(syntax).expect("测试源码应完成 lowering");
+        let Statement::Let {
+            value: Expression::Variable { local, name, .. },
+            ..
+        } = &mut program.functions[0].statements[1]
+        else {
+            panic!("第二个 let 必须读取首个局部")
+        };
+        assert_eq!(*local, Some(LocalId(0)));
+        *name = "diagnostic_only".to_owned();
+
+        let typed = check(&program).expect("局部类型检查与 Typed HIR 必须消费 LocalId");
+        let TypedStatement::Let { value, .. } = &typed.functions[0].statements[1] else {
+            panic!("Typed HIR 第二条语句必须是 let")
+        };
+        assert!(matches!(value.kind, TypedExpressionKind::Local(LocalId(0))));
+        assert_eq!(value.ty, Type::Int);
     }
 
     #[test]

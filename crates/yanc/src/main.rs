@@ -10,11 +10,11 @@ use std::{
 };
 
 use yan_eval::execute;
-use yan_hir::{lower, Program};
-use yan_mir::lower as lower_mir;
-use yan_source::{SourceFile, Span};
+use yan_hir::{lower_with_source, resolve_modules, ModuleGraph, ModuleId, ModuleInput, Program};
+use yan_mir::{lower as lower_mir, verify as verify_mir, VerifiedProgram};
+use yan_source::{SourceFile, SourceLocation, SourceMap, Span};
 use yan_syntax::{lex, parse, SyntaxProgram};
-use yan_typeck::{check, check_library, TypedProgram};
+use yan_typeck::{check, check_library};
 
 /// `yanc` 的稳定帮助文本。CLI 面向用户的全部输出均使用英文。
 const USAGE: &str = "Usage:\n  yanc check <file.yan>\n  yanc run <file.yan>\n  yanc --help";
@@ -57,16 +57,16 @@ fn run_command(path: &Path) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) => render_diagnostic(&Diagnostic {
-            source: compiled.source,
-            span: error.span,
-            message: error.message,
-        }),
+        Err(error) => {
+            let diagnostic = compiled.runtime_diagnostic(error);
+            render_diagnostic(&diagnostic)
+        }
     }
 }
 
 fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnostic> {
-    let entry = read_module(path)?;
+    let mut sources = SourceMap::new();
+    let entry = read_module(path, &mut sources)?;
     let source_root = find_source_root(path);
     if entry.has_user_imports() && source_root.is_none() {
         return Err(Diagnostic {
@@ -79,12 +79,24 @@ fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnosti
         validate_module_path(&entry, source_root)?;
     }
 
-    let mut program = entry.program.clone();
-    program.imports.retain(|path| is_platform_import(path));
+    let mut modules = vec![entry];
     if let Some(source_root) = source_root {
         let mut visiting = HashSet::new();
-        link_imports(&entry, &source_root, &mut visiting, &mut program)?;
+        collect_imported_modules(0, &source_root, &mut visiting, &mut modules, &mut sources)?;
     }
+    let graph = ModuleGraph::new(
+        modules
+            .into_iter()
+            .enumerate()
+            .map(|(index, module)| ModuleInput::new(ModuleId(index as u32), module.program))
+            .collect(),
+        ModuleId(0),
+    );
+    let resolved = resolve_modules(graph)
+        .map_err(|error| diagnostic_at(&sources, error.location, error.message))?;
+    let program = resolved
+        .entry_program()
+        .map_err(|error| diagnostic_at(&sources, error.location, error.message))?;
     let checked_as_library = !require_main
         && !program
             .functions
@@ -95,19 +107,12 @@ fn compile(path: &Path, require_main: bool) -> Result<CompiledProgram, Diagnosti
     } else {
         check(&program)
     }
-    .map_err(|error| Diagnostic {
-        source: entry.source.clone(),
-        span: error.span,
-        message: error.message,
-    })?;
-    // M14 先建立从 Typed HIR 到 MIR 的编译边界。当前解释器仍在下一子阶段迁移，
-    // 因此这里只验证 MIR lowering 能覆盖已通过类型检查的每个函数。
-    let mir = lower_mir(typed.clone());
-    Ok(CompiledProgram {
-        source: entry.source,
-        typed,
-        mir,
-    })
+    .map_err(|error| diagnostic_at(&sources, error.location, error.message))?;
+    let lowered =
+        lower_mir(typed).map_err(|error| diagnostic_at(&sources, error.location, error.message))?;
+    let mir = verify_mir(lowered)
+        .map_err(|error| diagnostic_at(&sources, error.location, error.message))?;
+    Ok(CompiledProgram { mir, sources })
 }
 
 /// 已解析并 lowering 的单个模块文件，同时保留模块解析所需的源信息。
@@ -126,7 +131,7 @@ impl ModuleFile {
     }
 }
 
-fn read_module(path: &Path) -> Result<ModuleFile, Diagnostic> {
+fn read_module(path: &Path, sources: &mut SourceMap) -> Result<ModuleFile, Diagnostic> {
     let text = fs::read_to_string(path).map_err(|_| Diagnostic {
         source: SourceFile::new(path, ""),
         span: Span::default(),
@@ -134,6 +139,7 @@ fn read_module(path: &Path) -> Result<ModuleFile, Diagnostic> {
         message: "failed to read file".to_owned(),
     })?;
     let source = SourceFile::new(path, text);
+    let source_id = sources.insert(source.clone());
     let tokens = lex(source.text()).map_err(|error| Diagnostic {
         source: source.clone(),
         span: error.span,
@@ -144,9 +150,9 @@ fn read_module(path: &Path) -> Result<ModuleFile, Diagnostic> {
         span: error.span,
         message: error.message,
     })?;
-    let program = lower(syntax.clone()).map_err(|error| Diagnostic {
+    let program = lower_with_source(syntax.clone(), source_id).map_err(|error| Diagnostic {
         source: source.clone(),
-        span: error.span,
+        span: error.location.span,
         message: error.message,
     })?;
     Ok(ModuleFile {
@@ -215,22 +221,24 @@ fn validate_module_path(module: &ModuleFile, source_root: &Path) -> Result<(), D
     Ok(())
 }
 
-fn link_imports(
-    module: &ModuleFile,
+fn collect_imported_modules(
+    module_index: usize,
     source_root: &Path,
     visiting: &mut HashSet<PathBuf>,
-    linked: &mut Program,
+    modules: &mut Vec<ModuleFile>,
+    sources: &mut SourceMap,
 ) -> Result<(), Diagnostic> {
-    for import in &module.syntax.imports {
+    let imports = modules[module_index].syntax.imports.clone();
+    for import in &imports {
         if is_platform_import(&import.path.segments) {
             continue;
         }
-        let Some((symbol, module_path)) = import.path.segments.split_last() else {
+        let Some((_, module_path)) = import.path.segments.split_last() else {
             continue;
         };
         if module_path.is_empty() {
             return Err(import_error(
-                module,
+                &modules[module_index],
                 import.path.span,
                 "import must name a module and symbol",
             ));
@@ -238,26 +246,49 @@ fn link_imports(
         let file_path = module_file_path(source_root, module_path);
         if !visiting.insert(file_path.clone()) {
             return Err(import_error(
-                module,
+                &modules[module_index],
                 import.path.span,
                 "cyclic module imports are not supported",
             ));
         }
         if !file_path.is_file() {
             return Err(import_error(
-                module,
+                &modules[module_index],
                 import.path.span,
                 format!("imported module `{}` was not found", module_path.join(".")),
             ));
         }
-        let dependency = read_module(&file_path)?;
+        if modules
+            .iter()
+            .any(|candidate| candidate.source.path() == file_path)
+        {
+            visiting.remove(&file_path);
+            continue;
+        }
+        let dependency = read_module(&file_path, sources)?;
         validate_module_path(&dependency, source_root)?;
-        link_imports(&dependency, source_root, visiting, linked)?;
-        append_public_symbol(&dependency, symbol, linked)
-            .map_err(|message| import_error(module, import.path.span, message))?;
+        let dependency_index = modules.len();
+        modules.push(dependency);
+        collect_imported_modules(dependency_index, source_root, visiting, modules, sources)?;
         visiting.remove(&file_path);
     }
     Ok(())
+}
+
+fn diagnostic_at(sources: &SourceMap, location: SourceLocation, message: String) -> Diagnostic {
+    let source = sources
+        .get(location.source)
+        .cloned()
+        .unwrap_or_else(|| SourceFile::new("<internal>", ""));
+    Diagnostic {
+        source,
+        span: location.span,
+        message: if sources.get(location.source).is_some() {
+            message
+        } else {
+            "invalid source location".to_owned()
+        },
+    }
 }
 
 fn module_file_path(source_root: &Path, module_path: &[String]) -> PathBuf {
@@ -267,62 +298,6 @@ fn module_file_path(source_root: &Path, module_path: &[String]) -> PathBuf {
     }
     path.set_extension("yan");
     path
-}
-
-fn append_public_symbol(
-    module: &ModuleFile,
-    symbol: &str,
-    linked: &mut Program,
-) -> Result<(), String> {
-    if let Some(declaration) = module
-        .program
-        .newtypes
-        .iter()
-        .find(|declaration| declaration.name == symbol)
-    {
-        if !declaration.public {
-            return Err(format!("imported symbol `{symbol}` is not public"));
-        }
-        linked.newtypes.push(declaration.clone());
-        return Ok(());
-    }
-    if let Some(declaration) = module
-        .program
-        .structs
-        .iter()
-        .find(|declaration| declaration.name == symbol)
-    {
-        if !declaration.public {
-            return Err(format!("imported symbol `{symbol}` is not public"));
-        }
-        linked.structs.push(declaration.clone());
-        return Ok(());
-    }
-    if let Some(declaration) = module
-        .program
-        .enums
-        .iter()
-        .find(|declaration| declaration.name == symbol)
-    {
-        if !declaration.public {
-            return Err(format!("imported symbol `{symbol}` is not public"));
-        }
-        linked.enums.push(declaration.clone());
-        return Ok(());
-    }
-    if let Some(declaration) = module
-        .program
-        .functions
-        .iter()
-        .find(|declaration| declaration.name == symbol)
-    {
-        if !declaration.public {
-            return Err(format!("imported symbol `{symbol}` is not public"));
-        }
-        linked.functions.push(declaration.clone());
-        return Ok(());
-    }
-    Err(format!("imported symbol `{symbol}` was not found"))
 }
 
 fn is_platform_import(path: &[String]) -> bool {
@@ -337,11 +312,20 @@ fn import_error(module: &ModuleFile, span: Span, message: impl Into<String>) -> 
     }
 }
 
-/// 同时保存已检查 HIR 与其原始文本，供后续阶段复用相同的诊断坐标。
+/// 保存已验证 MIR 与本次编译会话的源文件表，供执行阶段复用相同的诊断坐标。
 struct CompiledProgram {
-    source: SourceFile,
-    typed: TypedProgram,
-    mir: yan_mir::Program,
+    mir: VerifiedProgram,
+    sources: SourceMap,
+}
+
+impl CompiledProgram {
+    /// 将解释器的 MIR 源位置转换为 CLI 可展示的稳定诊断。
+    ///
+    /// MIR 的位置可能来自任意已导入模块，不能回退到入口文件；未知源 ID 则保留编译期
+    /// 既有的 `invalid source location` 文案，避免泄露内部实现细节。
+    fn runtime_diagnostic(&self, error: yan_eval::EvalError) -> Diagnostic {
+        diagnostic_at(&self.sources, error.location, error.message)
+    }
 }
 
 #[derive(Debug)]
@@ -367,11 +351,14 @@ fn render_diagnostic(diagnostic: &Diagnostic) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{
-        append_public_symbol, compile, find_source_root, read_module, validate_module_path, Program,
-    };
+    use super::{compile, find_source_root, read_module, validate_module_path};
+    use yan_eval::execute;
+    use yan_source::SourceMap;
 
     #[test]
     fn links_public_declarations_from_file_modules() {
@@ -381,15 +368,48 @@ mod tests {
 
         let compiled = compile(&path, true).expect("模块示例应完成链接与类型检查");
         assert!(compiled
-            .typed
-            .structs
-            .iter()
-            .any(|structure| structure.name == "Task"));
-        assert!(compiled
-            .typed
-            .functions
+            .mir
+            .functions()
             .iter()
             .any(|function| function.name == "rename_task"));
+        let function_ids = compiled
+            .mir
+            .functions()
+            .iter()
+            .map(|function| function.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(function_ids.len(), compiled.mir.functions().len());
+    }
+
+    #[test]
+    fn executes_m2_to_m13_fixture_matrix() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (fixture, expected) in [
+            ("examples/language-design/01-data-types/01_variables_and_bindings.yan", &["Yan", "1"][..]),
+            ("examples/language-design/01-data-types/02_int.yan", &["100"][..]),
+            ("examples/language-design/01-data-types/03_bool.yan", &["true"][..]),
+            ("examples/language-design/01-data-types/04_string.yan", &["Yan"][..]),
+            ("examples/language-design/01-data-types/05_list.yan", &["[cli, web]"][..]),
+            ("examples/language-design/01-data-types/06_unit.yan", &["started"][..]),
+            ("examples/language-design/01-data-types/07_bytes.yan", &["0xa13f"][..]),
+            ("examples/language-design/01-data-types/08_map.yan", &["{http: 80, https: 443}"][..]),
+            ("examples/language-design/01-data-types/09_float.yan", &["0.10"][..]),
+            ("examples/language-design/02-functions/01_functions.yan", &["total: 597"][..]),
+            ("examples/language-design/03-structs/01_structs.yan", &["Lin"][..]),
+            ("examples/language-design/04-enums-and-match/01_enums_and_match.yan", &["succeeded"][..]),
+            ("examples/language-design/05-option/01_option.yan", &["Lin"][..]),
+            ("examples/language-design/06-result/01_result.yan", &[][..]),
+            ("examples/language-design/07-collections/02_tuples_and_destructuring.yan", &["Lin Yan"][..]),
+            ("examples/language-design/08-conditions/01_if.yan", &["ready"][..]),
+            ("examples/language-design/09-loops/01_for.yan", &["cli", "web"][..]),
+            ("examples/language-design/10-modules/src/examples/modules/application.yan", &["approve Yan syntax"][..]),
+            ("examples/language-design/13-mutation-and-visibility/01_mut.yan", &["2"][..]),
+            ("examples/language-design/13-mutation-and-visibility/src/examples/visibility/application.yan", &["visible"][..]),
+        ] {
+            let compiled = compile(&workspace.join(fixture), true)
+                .unwrap_or_else(|error| panic!("{fixture} must compile: {}", error.message));
+            assert_eq!(execute(&compiled.mir).expect("fixture must execute"), expected, "{fixture}");
+        }
     }
 
     #[test]
@@ -398,7 +418,8 @@ mod tests {
             "examples/language-design/10-modules/src/examples/module_declaration/explicit.yan",
         );
         let source_root = find_source_root(&path).expect("fixture path must contain src");
-        let mut module = read_module(&path).expect("fixture module must parse");
+        let mut sources = SourceMap::new();
+        let mut module = read_module(&path, &mut sources).expect("fixture module must parse");
         module
             .syntax
             .module
@@ -412,27 +433,161 @@ mod tests {
     }
 
     #[test]
-    fn rejects_import_of_non_public_symbol() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("examples/language-design/10-modules/src/examples/modules/domain.yan");
-        let mut module = read_module(&path).expect("fixture module must parse");
-        module.program.structs[0].public = false;
-
-        let error = append_public_symbol(
-            &module,
-            "Task",
-            &mut Program {
-                id: yan_hir::ModuleId(0),
-                module: None,
-                imports: Vec::new(),
-                newtypes: Vec::new(),
-                structs: Vec::new(),
-                enums: Vec::new(),
-                functions: Vec::new(),
-            },
+    fn cross_module_diagnostic_uses_imported_source_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("测试时钟必须晚于 Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yan-m14-cross-module-{}-{unique}",
+            std::process::id()
+        ));
+        let source_root = root.join("src");
+        fs::create_dir_all(&source_root).expect("测试 src 目录必须创建成功");
+        let entry = source_root.join("app.yan");
+        let imported = source_root.join("library.yan");
+        fs::write(
+            &entry,
+            "module app\nimport library.broken\nfn main() -> unit {\n  broken()\n}\n",
         )
-        .expect_err("private declaration must not be imported");
-        assert_eq!(error, "imported symbol `Task` is not public");
+        .expect("入口测试源码必须写入成功");
+        fs::write(
+            &imported,
+            "module library\npub fn broken() -> unit {\n  missing\n}\n",
+        )
+        .expect("导入测试源码必须写入成功");
+
+        let error = match compile(&entry, false) {
+            Err(error) => error,
+            Ok(_) => panic!("导入模块的未定义变量必须失败"),
+        };
+        assert_eq!(error.source.path(), imported.as_path());
+        assert_eq!(error.source.line_column(error.span.start), Some((3, 3)));
+        assert_eq!(error.message, "undefined variable `missing`");
+
+        fs::remove_dir_all(&root).expect("测试临时目录必须清理成功");
+    }
+
+    #[test]
+    fn cross_module_runtime_diagnostic_uses_imported_source_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("测试时钟必须晚于 Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yan-m14-cross-module-runtime-{}-{unique}",
+            std::process::id()
+        ));
+        let source_root = root.join("src");
+        fs::create_dir_all(&source_root).expect("测试 src 目录必须创建成功");
+        let entry = source_root.join("app.yan");
+        let imported = source_root.join("library.yan");
+        fs::write(
+            &entry,
+            "module app\nimport library.overflow\nfn main() -> unit {\n  let value = overflow()\n}\n",
+        )
+        .expect("入口测试源码必须写入成功");
+        fs::write(
+            &imported,
+            "module library\npub fn overflow() -> int {\n  9223372036854775807 + 1\n}\n",
+        )
+        .expect("导入测试源码必须写入成功");
+
+        let compiled = compile(&entry, true).expect("运行时错误 fixture 必须通过编译");
+        let error = execute(&compiled.mir).expect_err("导入模块的整数溢出必须执行失败");
+        let diagnostic = compiled.runtime_diagnostic(error);
+        assert_eq!(diagnostic.source.path(), imported.as_path());
+        assert_eq!(
+            diagnostic.source.line_column(diagnostic.span.start),
+            Some((3, 3))
+        );
+        assert_eq!(diagnostic.message, "integer addition overflow");
+
+        fs::remove_dir_all(&root).expect("测试临时目录必须清理成功");
+    }
+
+    #[test]
+    fn imported_default_diagnostic_uses_declaration_source_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("测试时钟必须晚于 Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yan-m14-imported-default-{}-{unique}",
+            std::process::id()
+        ));
+        let source_root = root.join("src");
+        fs::create_dir_all(&source_root).expect("测试 src 目录必须创建成功");
+        let entry = source_root.join("app.yan");
+        let imported = source_root.join("settings.yan");
+        fs::write(
+            &entry,
+            "module app\nimport settings.Config\nfn main() -> unit { }\n",
+        )
+        .expect("入口测试源码必须写入成功");
+        fs::write(
+            &imported,
+            "module settings\npub struct Config {\n  port: int = \"bad\"\n}\n",
+        )
+        .expect("导入测试源码必须写入成功");
+
+        let error = match compile(&entry, false) {
+            Err(error) => error,
+            Ok(_) => panic!("导入声明的错误默认值必须失败"),
+        };
+        assert_eq!(error.source.path(), imported.as_path());
+        assert_eq!(error.source.line_column(error.span.start), Some((3, 3)));
+        assert_eq!(
+            error.message,
+            "default value for field `port` does not match its type"
+        );
+
+        fs::remove_dir_all(&root).expect("测试临时目录必须清理成功");
+    }
+
+    #[test]
+    fn private_and_missing_import_diagnostics_use_exact_import_location() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("测试时钟必须晚于 Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yan-m14-private-import-{}-{unique}",
+            std::process::id()
+        ));
+        let source_root = root.join("src");
+        fs::create_dir_all(&source_root).expect("测试 src 目录必须创建成功");
+        let entry = source_root.join("app.yan");
+        let imported = source_root.join("library.yan");
+        fs::write(
+            &entry,
+            "module app\nimport library.hidden\nfn main() -> unit { }\n",
+        )
+        .expect("入口测试源码必须写入成功");
+        fs::write(&imported, "module library\nfn hidden() -> unit { }\n")
+            .expect("导入测试源码必须写入成功");
+
+        let error = match compile(&entry, false) {
+            Err(error) => error,
+            Ok(_) => panic!("私有符号导入必须失败"),
+        };
+        assert_eq!(error.source.path(), entry.as_path());
+        assert_eq!(error.source.line_column(error.span.start), Some((2, 8)));
+        assert_eq!(error.message, "imported symbol `hidden` is not public");
+
+        fs::write(
+            &entry,
+            "module app\nimport library.absent\nfn main() -> unit { }\n",
+        )
+        .expect("缺失符号入口源码必须写入成功");
+        let error = match compile(&entry, false) {
+            Err(error) => error,
+            Ok(_) => panic!("缺失符号导入必须失败"),
+        };
+        assert_eq!(error.source.path(), entry.as_path());
+        assert_eq!(error.source.line_column(error.span.start), Some((2, 8)));
+        assert_eq!(error.message, "imported symbol `absent` was not found");
+
+        fs::remove_dir_all(&root).expect("测试临时目录必须清理成功");
     }
 }
