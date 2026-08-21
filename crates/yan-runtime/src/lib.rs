@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn covers_result_operations_access_and_intrinsic_errors() {
+    fn covers_result_operations_access_and_intrinsic_errors() -> Result<(), RuntimeError> {
         assert_eq!(
             Value::Result(Ok(Box::new(Value::Integer(2)))).display(),
             "Ok(2)"
@@ -273,10 +273,7 @@ mod tests {
             field(&Value::Struct(vec![]), 1),
             Err(RuntimeError::InvalidStructField)
         );
-        let mut iterator = match list_iterator(&Value::List(vec![Value::Integer(1)])) {
-            Ok(iterator) => iterator,
-            Err(error) => panic!("List fixture must construct an iterator: {error:?}"),
-        };
+        let mut iterator = list_iterator(&Value::List(vec![Value::Integer(1)]))?;
         assert_eq!(iterator_next(&mut iterator), Some(Value::Integer(1)));
         assert_eq!(iterator_next(&mut iterator), None);
         assert_eq!(bytes_from_hex("g0"), Err(RuntimeError::InvalidHex));
@@ -286,6 +283,7 @@ mod tests {
         );
         assert!(matches!(Value::Option(None), Value::Option(None)));
         assert!(matches!(Value::Enum(1, None), Value::Enum(1, None)));
+        Ok(())
     }
 
     #[test]
