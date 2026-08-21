@@ -1,6 +1,6 @@
 # M15：最小 Rust 原生后端
 
-状态：设计已确认，尚未实施
+状态：已完成（2026-08-21）
 范围：新增 `yanc build <file.yan>`，将已验证 MIR 编译为受控 Rust Cargo 项目并产出本地可执行二进制；为 M16 的 Yan 源标准库固定内部模块和运行时边界。
 
 ## 目标
@@ -64,6 +64,13 @@ M15 必须将 M2 至 M13 的全部已实现语义编译为二进制并保持与 
 - Cargo/link 失败、后端 lowering 失败与 Yan 运行时失败均通过稳定 Yan 诊断报告，包含受控路径和位置。
 - 有回归证明用户无法在 M15 导入保留的 `yan.std`，同时内部模块输入可通过同一编译单元处理。
 - `cargo fmt --all -- --check`、`cargo test --workspace`、`git diff --check` 均通过，且不提交生成物。
+
+## 验收结果
+
+- `yanc build` 对 M2 至 M13 的全部既有可执行 fixture 生成本地二进制；二进制标准输出逐行等于同一已验证 MIR 的解释器输出。回归还覆盖跨模块公开声明、`mut`、struct 字段、enum/Option/Result match、tuple 解构、if、for、早期 return 与 Result `?`。
+- 前端诊断保留其原始文件与位置；实际 Cargo 失败稳定映射为入口文件 `1:1` 的 `backend build failed`，不转发 Cargo 或链接器文本。
+- `yan.std` 仍是 M16 的保留内部根命名空间：M15 用户导入会被拒绝，编译器拥有的内部模块可使用同一模块图、类型检查、MIR 与 Rust 后端流程，但尚未提供标准库源文件或 API。
+- 验证命令 `cargo fmt --all -- --check`、`cargo test --workspace` 与 `git diff --check` 已通过；生成的 `target/yan`、Cargo 项目和二进制未提交。
 
 ## 非目标
 

@@ -757,8 +757,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        build_hash, cargo_build_command, cargo_isolation_root, cargo_isolation_root_from_public,
-        compile, compile_with_internal_modules, dispatch, find_source_root, read_module,
+        backend_build_diagnostic, build_binary, build_hash, cargo_build_command,
+        cargo_isolation_root, cargo_isolation_root_from_public, compile,
+        compile_with_internal_modules, dispatch, find_source_root, read_module,
         rejects_cargo_configuration_in_ancestors, rejects_cargo_home_configuration,
         remove_cargo_target_configuration_environment, validate_module_path, CargoIsolation, USAGE,
     };
@@ -1011,6 +1012,29 @@ mod tests {
     }
 
     #[test]
+    fn cargo_failure_maps_to_stable_backend_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = temporary_entry("[package\n")?;
+        let entry = temporary_entry("fn main() -> unit { }")?;
+        let _manifest_cleanup = RemoveFileOnDrop(manifest.clone());
+        let _entry_cleanup = RemoveFileOnDrop(entry.clone());
+        let isolation =
+            CargoIsolation::create().map_err(|_| "Cargo isolation must be available")?;
+        let status = cargo_build_command(&isolation, &manifest)
+            .map_err(|_| "Cargo command must be constructible")?
+            .status()?;
+        assert!(!status.success());
+
+        let mut stderr = Vec::new();
+        let exit_code = backend_build_diagnostic(&entry, &mut stderr)?;
+        assert_eq!(exit_code, ExitCode::FAILURE);
+        assert_eq!(
+            String::from_utf8(stderr)?,
+            format!("error: {}:1:1: backend build failed\n", entry.display())
+        );
+        Ok(())
+    }
+
+    #[test]
     fn removes_target_specific_cargo_configuration_environment() {
         let mut command = Command::new("cargo");
         remove_cargo_target_configuration_environment(
@@ -1176,6 +1200,67 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{fixture} must compile: {}", error.message));
             assert_eq!(execute(&compiled.mir).expect("fixture must execute"), expected, "{fixture}");
         }
+    }
+
+    #[test]
+    fn build_matches_interpreter_for_m2_to_m13_fixtures() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for fixture in [
+            "examples/language-design/01-data-types/01_variables_and_bindings.yan",
+            "examples/language-design/01-data-types/02_int.yan",
+            "examples/language-design/01-data-types/03_bool.yan",
+            "examples/language-design/01-data-types/04_string.yan",
+            "examples/language-design/01-data-types/05_list.yan",
+            "examples/language-design/01-data-types/06_unit.yan",
+            "examples/language-design/01-data-types/07_bytes.yan",
+            "examples/language-design/01-data-types/08_map.yan",
+            "examples/language-design/01-data-types/09_float.yan",
+            "examples/language-design/02-functions/01_functions.yan",
+            "examples/language-design/03-structs/01_structs.yan",
+            "examples/language-design/04-enums-and-match/01_enums_and_match.yan",
+            "examples/language-design/05-option/01_option.yan",
+            "examples/language-design/06-result/01_result.yan",
+            "examples/language-design/07-collections/02_tuples_and_destructuring.yan",
+            "examples/language-design/08-conditions/01_if.yan",
+            "examples/language-design/09-loops/01_for.yan",
+            "examples/language-design/10-modules/src/examples/modules/application.yan",
+            "examples/language-design/13-mutation-and-visibility/01_mut.yan",
+            "examples/language-design/13-mutation-and-visibility/src/examples/visibility/application.yan",
+        ] {
+            assert_build_matches_interpreter(&workspace.join(fixture))?;
+        }
+
+        for source in [
+            "import yan.platform.console\nfn choose(value: bool) -> int { if value { return 7 } else { 9 } }\nfn main() -> unit { console.println(choose(true)) }",
+            "import yan.platform.console\nfn number() -> Result<int, string> { Ok(7) }\nfn print_number() -> Result<int, string> { let value = number()? console.println(value) Ok(value) }\nfn main() -> Result<int, string> { let value = print_number()? Ok(value) }",
+        ] {
+            let entry = temporary_entry(source)?;
+            let _entry_cleanup = RemoveFileOnDrop(entry.clone());
+            assert_build_matches_interpreter(&entry)?;
+        }
+        Ok(())
+    }
+
+    fn assert_build_matches_interpreter(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let compiled = compile(path, true).map_err(|error| error.message)?;
+        let interpreted = execute(&compiled.mir).map_err(|error| error.message)?;
+        let _build_cleanup = RemoveDirectoryOnDrop(generated_build_root(path)?);
+        let binary = build_binary(path, &compiled.mir).map_err(|_| {
+            format!(
+                "fixture must build through the Rust backend: {}",
+                path.display()
+            )
+        })?;
+        let output = Command::new(&binary).output()?;
+        let binary_lines = String::from_utf8(output.stdout)?
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        assert_eq!(binary_lines, interpreted, "fixture: {}", path.display());
+        assert!(output.stderr.is_empty(), "fixture: {}", path.display());
+        Ok(())
     }
 
     #[test]

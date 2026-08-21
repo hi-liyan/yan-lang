@@ -294,7 +294,7 @@ fn render_instruction(output: &mut String, instruction: &Instruction) -> Result<
                 entries
                     .iter()
                     .map(|(key, value)| format!(
-                        "({}, {})",
+                        "({}.to_owned(), {})",
                         rust_string(key),
                         render_operand(value)
                     ))
@@ -518,7 +518,7 @@ fn render_operand(operand: &Operand) -> String {
 fn render_constant(value: &Constant) -> String {
     match value {
         Constant::Integer(value) => format!("Value::Integer({value})"),
-        Constant::Float(value) => format!("Value::Float({})", rust_string(value)),
+        Constant::Float(value) => format!("Value::Float({}.to_owned())", rust_string(value)),
         Constant::Boolean(value) => format!("Value::Boolean({value})"),
         Constant::String(value) => format!("Value::String({}.to_owned())", rust_string(value)),
         Constant::Unit => "Value::Unit".to_owned(),
@@ -795,6 +795,43 @@ mod tests {
             );
             assert_eq!(String::from_utf8(output.stdout)?, expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_project_materializes_map_keys_as_runtime_strings(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = run_generated(
+            "import yan.platform.console fn main() -> unit { let ports: Map<string, int> = { \"http\": 80 \"https\": 443 } console.println(ports) }",
+        )?;
+
+        assert!(
+            output.status.success(),
+            "generated map program failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stdout)?,
+            "{http: 80, https: 443}\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generated_project_materializes_float_text_as_runtime_string(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = run_generated(
+            "import yan.platform.console fn main() -> unit { let price = 0.10 console.println(price) }",
+        )?;
+
+        assert!(
+            output.status.success(),
+            "generated float program failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8(output.stdout)?, "0.10\n");
         Ok(())
     }
 
