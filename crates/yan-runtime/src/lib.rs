@@ -1,7 +1,9 @@
-//! Yan 原生后端的受控运行时边界。
+//! Yan 原生后端生成程序使用的受控值和 intrinsic 运行时。
 //!
-//! M15 Task 1 仅建立 crate 边界，不定义运行时值、intrinsic 或用户可调用 API。后续任务
-//! 只能在保持 Yan 语义独立且由编译器控制的前提下，向此 crate 添加实现。
+//! 本 crate 不解析 Yan 源码、不调用 Cargo，也不提供用户可配置依赖；后端只生成对本 ABI
+//! 的固定调用，以保持二进制与 MIR 解释器的可观察值语义一致。
+
+use std::io::{self, Write};
 
 /// Yan 运行时可物化的值。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +53,8 @@ pub enum RuntimeError {
     InvalidHex,
     /// 字符串不能转换为 int。
     InvalidIntegerString,
+    /// 控制台输出无法写入或刷新。
+    ConsoleWriteFailed,
 }
 
 /// 按 Yan 的用户可见规则显示值。
@@ -187,13 +191,48 @@ pub fn string_to_int(text: &str) -> Value {
     }
 }
 /// 将值写入标准输出并追加换行。
-pub fn console_println(value: &Value) {
-    println!("{}", display(value));
+///
+/// 写入或刷新失败返回稳定运行时错误，避免后端二进制因输出设备关闭而 panic。
+pub fn console_println(value: &Value) -> Result<(), RuntimeError> {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    console_println_to(&mut output, value)
+}
+
+fn console_println_to(output: &mut dyn Write, value: &Value) -> Result<(), RuntimeError> {
+    output
+        .write_all(format!("{}\n", display(value)).as_bytes())
+        .map_err(|_| RuntimeError::ConsoleWriteFailed)?;
+    output.flush().map_err(|_| RuntimeError::ConsoleWriteFailed)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{add, Value};
+    use std::io::{self, Write};
+
+    use super::{
+        add, bytes_from_hex, console_println_to, equal, field, iterator_next, list_iterator,
+        multiply, string_to_int, tuple_element, RuntimeError, Value,
+    };
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("failed"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reports_console_output_failure_without_panicking() {
+        assert_eq!(
+            console_println_to(&mut FailingWriter, &Value::Integer(1)),
+            Err(RuntimeError::ConsoleWriteFailed)
+        );
+    }
 
     #[test]
     fn displays_composite_yan_values_with_interpreter_formatting() {
@@ -210,5 +249,40 @@ mod tests {
             add(Value::Integer(i64::MAX), Value::Integer(1)),
             Err(super::RuntimeError::IntegerAdditionOverflow)
         );
+    }
+
+    #[test]
+    fn covers_result_operations_access_and_intrinsic_errors() {
+        assert_eq!(
+            Value::Result(Ok(Box::new(Value::Integer(2)))).display(),
+            "Ok(2)"
+        );
+        assert_eq!(
+            multiply(Value::Integer(i64::MAX), Value::Integer(2)),
+            Err(RuntimeError::IntegerMultiplicationOverflow)
+        );
+        assert_eq!(
+            equal(Value::String("a".into()), Value::String("a".into())),
+            Ok(Value::Boolean(true))
+        );
+        assert_eq!(
+            tuple_element(&Value::Tuple(vec![]), 0),
+            Err(RuntimeError::InvalidTupleElement)
+        );
+        assert_eq!(
+            field(&Value::Struct(vec![]), 1),
+            Err(RuntimeError::InvalidStructField)
+        );
+        let mut iterator =
+            list_iterator(&Value::List(vec![Value::Integer(1)])).expect("list iterator");
+        assert_eq!(iterator_next(&mut iterator), Some(Value::Integer(1)));
+        assert_eq!(iterator_next(&mut iterator), None);
+        assert_eq!(bytes_from_hex("g0"), Err(RuntimeError::InvalidHex));
+        assert_eq!(
+            string_to_int("bad"),
+            Value::Result(Err(Box::new(Value::Unit)))
+        );
+        assert!(matches!(Value::Option(None), Value::Option(None)));
+        assert!(matches!(Value::Enum(1, None), Value::Enum(1, None)));
     }
 }
