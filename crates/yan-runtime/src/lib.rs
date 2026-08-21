@@ -273,8 +273,10 @@ mod tests {
             field(&Value::Struct(vec![]), 1),
             Err(RuntimeError::InvalidStructField)
         );
-        let mut iterator =
-            list_iterator(&Value::List(vec![Value::Integer(1)])).expect("list iterator");
+        let mut iterator = match list_iterator(&Value::List(vec![Value::Integer(1)])) {
+            Ok(iterator) => iterator,
+            Err(error) => panic!("List fixture must construct an iterator: {error:?}"),
+        };
         assert_eq!(iterator_next(&mut iterator), Some(Value::Integer(1)));
         assert_eq!(iterator_next(&mut iterator), None);
         assert_eq!(bytes_from_hex("g0"), Err(RuntimeError::InvalidHex));
@@ -284,5 +286,33 @@ mod tests {
         );
         assert!(matches!(Value::Option(None), Value::Option(None)));
         assert!(matches!(Value::Enum(1, None), Value::Enum(1, None)));
+    }
+
+    #[test]
+    fn preserves_successful_runtime_value_semantics() {
+        assert_eq!(
+            tuple_element(&Value::Tuple(vec![Value::Integer(7)]), 0),
+            Ok(Value::Integer(7))
+        );
+        assert_eq!(
+            field(&Value::Struct(vec![(4, Value::String("Yan".into()))]), 4),
+            Ok(Value::String("Yan".into()))
+        );
+        assert_eq!(bytes_from_hex("a13f"), Ok(Value::Bytes(vec![0xa1, 0x3f])));
+        assert_eq!(
+            string_to_int("42"),
+            Value::Result(Ok(Box::new(Value::Integer(42))))
+        );
+        assert_eq!(
+            Value::Option(Some(Box::new(Value::Integer(1)))).display(),
+            "Some(1)"
+        );
+        assert_eq!(Value::Enum(7, None).display(), "enum");
+        assert_eq!(Value::Float("0.10".into()).display(), "0.10");
+        assert_eq!(
+            Value::Map(vec![("http".into(), Value::Integer(80))]).display(),
+            "{http: 80}"
+        );
+        assert_eq!(Value::Struct(vec![]).display(), "struct");
     }
 }
