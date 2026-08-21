@@ -1,0 +1,129 @@
+module examples.business_flow
+
+import yan.platform.console
+
+// 订单状态用于描述业务流转的当前阶段。
+enum OrderState {
+  Pending
+  Approved
+  Rejected(reason: string)
+}
+
+// 优先级是封闭业务枚举，排序规则由业务而不是隐式数值定义。
+enum Priority {
+  Low
+  Medium
+  High
+}
+
+// 订单同时携带业务金额和处理优先级。
+struct Order {
+  id: string
+  amount: int
+  priority: Priority
+  state: OrderState
+}
+
+// 将业务状态转换为面向用户的稳定文本。
+fn display_state(state: OrderState) -> string {
+  match state {
+    OrderState.Pending => "pending"
+    OrderState.Approved => "approved"
+    OrderState.Rejected(reason) => "rejected: {reason}"
+  }
+}
+
+// 将排序结果转换为便于观察的文本。
+fn display_priority(priority: Priority) -> string {
+  match priority {
+    Priority.Low => "low"
+    Priority.Medium => "medium"
+    Priority.High => "high"
+  }
+}
+
+// 订单展示与状态转换放在同一个业务边界中。
+fn print_order(order: Order) -> unit {
+  console.println(order.id)
+  console.println(display_state(order.state))
+}
+
+// 遍历已经按业务状态折算的金额列表，计算最终可结算总额。
+fn approved_amount(amounts: List<int>) -> int {
+  let mut total = 0
+  for amount in amounts {
+    total = total + amount
+  }
+  total
+}
+
+// 显式列出优先级的比较规则，避免依赖尚未提供的关系比较运算符。
+fn order_pair(left: Priority, right: Priority) -> (Priority, Priority) {
+  match left {
+    Priority.Low => (Priority.Low, right)
+    Priority.Medium => match right {
+      Priority.Low => (Priority.Low, Priority.Medium)
+      Priority.Medium => (Priority.Medium, Priority.Medium)
+      Priority.High => (Priority.Medium, Priority.High)
+    }
+    Priority.High => match right {
+      Priority.Low => (Priority.Low, Priority.High)
+      Priority.Medium => (Priority.Medium, Priority.High)
+      Priority.High => (Priority.High, Priority.High)
+    }
+  }
+}
+
+// 固定三个值的比较交换网络；当前没有可变 List 或通用排序 API。
+fn sort_three(first: Priority, second: Priority, third: Priority) -> (Priority, Priority, Priority) {
+  let (first_low, first_high) = order_pair(first, second)
+  let (second_low, highest) = order_pair(first_high, third)
+  let (lowest, middle) = order_pair(first_low, second_low)
+  (lowest, middle, highest)
+}
+
+fn main() -> unit {
+  let first_order = Order {
+    id: "order-100"
+    amount: 120
+    priority: Priority.High
+    state: OrderState.Pending
+  }
+  let second_order = Order {
+    id: "order-101"
+    amount: 450
+    priority: Priority.Low
+    state: OrderState.Approved
+  }
+  let third_order = Order {
+    id: "order-102"
+    amount: 80
+    priority: Priority.Medium
+    state: OrderState.Rejected("payment failed")
+  }
+  let orders = [
+    first_order,
+    second_order,
+    third_order
+  ]
+
+  // 遍历列表，输出每笔订单的业务处理结果。
+  for order in orders {
+    print_order(order)
+  }
+
+  // Pending 和 Rejected 都折算为 0，只有 Approved 订单保留金额。
+  let settled_amounts = [0, 450, 0]
+  console.println("approved amount")
+  console.println(approved_amount(settled_amounts))
+
+  let (first, second, third) = sort_three(
+    first_order.priority,
+    second_order.priority,
+    third_order.priority
+  )
+  console.println("sorted priorities")
+  console.println(display_priority(first))
+  console.println(display_priority(second))
+  console.println(display_priority(third))
+}
